@@ -41,6 +41,7 @@ type VNPUConfig struct {
 	ChipName           string     `yaml:"chipName"`
 	ResourceName       string     `yaml:"resourceName"`
 	ResourceMemoryName string     `yaml:"resourceMemoryName"`
+	ResourceCoreName   string     `yaml:"resourceCoreName"`
 	MemoryAllocatable  int64      `yaml:"memoryAllocatable"`
 	MemoryCapacity     int64      `yaml:"memoryCapacity"`
 	MemoryFactor       int32      `yaml:"memoryFactor"`
@@ -100,6 +101,17 @@ func (dev *Devices) GetResource(n *corev1.Node) map[string]int {
 	resourceMap := map[string]int{
 		resourceName: 0,
 	}
+	// In hami-vnpu-core soft-partition mode the config declares resourceCoreName
+	// (e.g. huawei.com/Ascend910B4-core). Register the AI core as an allocatable
+	// resource too, otherwise vNPU pods that request core cannot be scheduled.
+	// core and memory must share resourceMap from the first call so that
+	// MockLister registers both plugins in a single shot.
+	hasCore := dev.config.ResourceCoreName != ""
+	var coreResourceName string
+	if hasCore {
+		coreResourceName = device.GetResourceName(dev.config.ResourceCoreName)
+		resourceMap[coreResourceName] = 0
+	}
 	if !device.CheckHealthy(n, dev.config.ResourceName) {
 		klog.Infof("device %s is unhealthy on this node", dev.CommonWord())
 		return resourceMap
@@ -111,6 +123,17 @@ func (dev *Devices) GetResource(n *corev1.Node) map[string]int {
 	}
 	for _, val := range devInfos {
 		resourceMap[resourceName] += int(val.Devmem)
+		if hasCore {
+			// Prefer the per-card devcore from the annotation (consistent with
+			// memory being taken from the annotation's devmem). Fall back to the
+			// chip-level aiCore when a hand-crafted/legacy annotation omits
+			// devcore, so core is not mistakenly counted as 0.
+			core := int(val.Devcore)
+			if core == 0 {
+				core = int(dev.config.AICore)
+			}
+			resourceMap[coreResourceName] += core
+		}
 	}
 	if dev.config.MemoryFactor > 1 {
 		rawMemory := resourceMap[resourceName]
@@ -118,6 +141,9 @@ func (dev *Devices) GetResource(n *corev1.Node) map[string]int {
 		klog.InfoS("Update memory", "raw", rawMemory, "after", resourceMap[resourceName], "factor", dev.config.MemoryFactor)
 	}
 	klog.InfoS("Add resource", resourceName, resourceMap[resourceName])
+	if hasCore {
+		klog.InfoS("Add resource", coreResourceName, resourceMap[coreResourceName])
+	}
 	return resourceMap
 }
 
