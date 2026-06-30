@@ -1,5 +1,5 @@
 /*
-Copyright 2025 The HAMi Authors.
+Copyright 2026 The HAMi Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -84,30 +84,30 @@ func TestGetResource_Core(t *testing.T) {
 		wantCoreKey bool
 	}{
 		{
-			name:        "1 core + devcore in annotation",
+			name:        "1 two cards -> 100 core per card",
 			dev:         newDev(coreFull, 20, 0),
 			anno:        cards(2, 32768, 20),
 			capacity:    "8",
 			wantMem:     65536,
-			wantCore:    40,
+			wantCore:    200, // 2 cards * 100 (percentage-based, devcore ignored)
 			wantCoreKey: true,
 		},
 		{
-			name:        "2 183 real scale (8 cards)",
+			name:        "2 real scale (8 cards)",
 			dev:         newDev(coreFull, 20, 0),
 			anno:        cards(8, 32768, 20),
 			capacity:    "32",
 			wantMem:     262144,
-			wantCore:    160,
+			wantCore:    800, // 8 cards * 100
 			wantCoreKey: true,
 		},
 		{
-			name:        "3 annotation missing devcore -> fallback to config.AICore",
+			name:        "3 annotation devcore omitted -> still 100 per card",
 			dev:         newDev(coreFull, 20, 0),
 			anno:        cards(2, 21527, 0),
 			capacity:    "8",
 			wantMem:     43054,
-			wantCore:    40, // 2 * config.AICore(20)
+			wantCore:    200, // 2 cards * 100, independent of devcore
 			wantCoreKey: true,
 		},
 		{
@@ -125,7 +125,7 @@ func TestGetResource_Core(t *testing.T) {
 			anno:        cards(2, 16384, 20),
 			capacity:    "8",
 			wantMem:     16384, // (16384*2)/2
-			wantCore:    40,
+			wantCore:    200,   // 2 cards * 100
 			wantCoreKey: true,
 		},
 		{
@@ -138,12 +138,12 @@ func TestGetResource_Core(t *testing.T) {
 			wantCoreKey: true, // key present but zero
 		},
 		{
-			name:        "7 mixed devcore (one card 0 -> fallback)",
+			name:        "7 varying devcore in annotation is ignored for core",
 			dev:         newDev(coreFull, 20, 0),
 			anno:        `[{"id":"A","devmem":32768,"devcore":20,"type":"Ascend910B4","health":true},{"id":"B","index":1,"devmem":32768,"devcore":0,"type":"Ascend910B4","health":true}]`,
 			capacity:    "8",
 			wantMem:     65536,
-			wantCore:    40, // 20 + fallback 20
+			wantCore:    200, // 2 cards * 100 regardless of per-card devcore
 			wantCoreKey: true,
 		},
 		{

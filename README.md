@@ -55,14 +55,14 @@ Annotation entry fields:
 | :-- | :-- |
 | `id` | unique device UUID (any string) |
 | `devmem` | per-card memory in MB -- **summed** into `...-memory` |
-| `devcore` | per-card cores -- **summed** into `...-cores`/`...-core` (Ascend: AI cores; NVIDIA: percentage where 100 = a whole card) |
+| `devcore` | per-card cores. **NVIDIA/Hygon:** summed into `...-cores` (NVIDIA: percentage, 100 = a whole card). **Ascend:** ignored -- `huawei.com/<chip>-core` is percentage-based, registered as **100 per card**. |
 | `count` | per-card split count (informational for the mock) |
 | `type` | device model string |
 | `health` | must be `true` to be counted |
 | `index` | card index `0,1,2,...` (`0` may be omitted) |
 | `numa`, `mode` | optional |
 
-> **Worked example (Ascend, below):** the annotation has **2 entries**, each `devmem=32768, devcore=20`. So `...-memory = 2x32768 = 65536` and `...-core = 2x20 = 40` (i.e. **20 per card**, not 5). The count resource `=8` is a separate health-gate value and is unrelated to these two numbers.
+> **Worked example (Ascend, below):** the annotation has **2 entries**, each `devmem=32768`. So `...-memory = 2x32768 = 65536` and `...-core = 2x100 = 200` (Ascend `...-core` is **percentage-based**: a whole card is always **100**). The count resource `=8` is a separate health-gate value and is unrelated to these numbers.
 
 ## Usage by vendor
 
@@ -99,10 +99,10 @@ kubectl annotate node <node> \
   'hami.io/node-register-Ascend910B4=[{"id":"MOCK-0","count":4,"devmem":32768,"devcore":20,"type":"Ascend910B4","health":true},{"id":"MOCK-1","index":1,"count":4,"devmem":32768,"devcore":20,"type":"Ascend910B4","health":true}]'
 # verify
 kubectl get node <node> -o json | jq '.status.allocatable|with_entries(select(.key|test("Ascend910B4")))'
-# expect: huawei.com/Ascend910B4-memory=65536, huawei.com/Ascend910B4-core=40
+# expect: huawei.com/Ascend910B4-memory=65536, huawei.com/Ascend910B4-core=200  (2 cards x 100)
 ```
 
-If the annotation omits `devcore`, the core count falls back to the chip-level `aiCore` from the config.
+The Ascend `-core` resource is **percentage-based**: each physical card contributes **100** (a whole card), independent of the annotation's `devcore`. HAMi caps a core request at 100 and, in `hami-vnpu-core` soft mode, treats a card's total core as 100.
 
 ### Hygon DCU
 

@@ -29,6 +29,12 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// ascendCardCorePercentage is the per-physical-card core capacity reported for
+// the percentage-based huawei.com/<chip>-core resource. A whole card is 100:
+// HAMi caps a core request at 100 and, in hami-vnpu-core soft mode, treats a
+// card's total core as 100 regardless of the physical AI-core count.
+const ascendCardCorePercentage = 100
+
 type Template struct {
 	Name   string `yaml:"name"`
 	Memory int64  `yaml:"memory"`
@@ -124,15 +130,12 @@ func (dev *Devices) GetResource(n *corev1.Node) map[string]int {
 	for _, val := range devInfos {
 		resourceMap[resourceName] += int(val.Devmem)
 		if hasCore {
-			// Prefer the per-card devcore from the annotation (consistent with
-			// memory being taken from the annotation's devmem). Fall back to the
-			// chip-level aiCore when a hand-crafted/legacy annotation omits
-			// devcore, so core is not mistakenly counted as 0.
-			core := int(val.Devcore)
-			if core == 0 {
-				core = int(dev.config.AICore)
-			}
-			resourceMap[coreResourceName] += core
+			// huawei.com/<chip>-core is a percentage-based resource: a whole
+			// physical card is 100. HAMi caps a core request at 100 and, in
+			// hami-vnpu-core soft mode, treats the card's total core as 100
+			// (it ignores the physical AI-core count). So register 100 per
+			// physical card, independent of the annotation's devcore.
+			resourceMap[coreResourceName] += ascendCardCorePercentage
 		}
 	}
 	if dev.config.MemoryFactor > 1 {
