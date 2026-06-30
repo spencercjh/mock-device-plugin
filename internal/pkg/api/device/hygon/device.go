@@ -112,7 +112,7 @@ func (dev *DCUDevices) GetResource(n *corev1.Node) map[string]int {
 
 func (dev *DCUDevices) RunManager() {
 	lmock := mock.NewMockLister(device.GetVendorName(HygonResourceMemory))
-	device.Register(lmock, dev)
+	go device.Register(lmock, dev)
 	mockmanager := dpm.NewManager(lmock)
 	klog.Infof("Running mocking dp: %s", dev.CommonWord())
 	mockmanager.Run()
