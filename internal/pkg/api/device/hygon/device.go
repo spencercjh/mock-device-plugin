@@ -89,6 +89,16 @@ func (dev *DCUDevices) GetResource(n *corev1.Node) map[string]int {
 	resourceMap := map[string]int{
 		memoryResourceName: 0,
 	}
+	// HAMi consumes the DCU core resource (e.g. hygon.com/dcucores) for compute
+	// partitioning, so register it as allocatable too when the config declares it.
+	// core and memory must share resourceMap from the first call so that
+	// MockLister registers both plugins in a single shot.
+	hasCore := HygonResourceCores != ""
+	var coreResourceName string
+	if hasCore {
+		coreResourceName = device.GetResourceName(HygonResourceCores)
+		resourceMap[coreResourceName] = 0
+	}
 	if !device.CheckHealthy(n, HygonResourceCount) {
 		klog.Infof("device %s is unhealthy on this node", dev.CommonWord())
 		return resourceMap
@@ -100,6 +110,9 @@ func (dev *DCUDevices) GetResource(n *corev1.Node) map[string]int {
 	}
 	for _, val := range devs {
 		resourceMap[memoryResourceName] += int(val.Devmem)
+		if hasCore {
+			resourceMap[coreResourceName] += int(val.Devcore)
+		}
 	}
 	if MemoryFactor > 1 {
 		rawMemory := resourceMap[memoryResourceName]
@@ -107,6 +120,9 @@ func (dev *DCUDevices) GetResource(n *corev1.Node) map[string]int {
 		klog.InfoS("Update memory", "raw", rawMemory, "after", resourceMap[memoryResourceName], "factor", MemoryFactor)
 	}
 	klog.InfoS("Add resources", memoryResourceName, resourceMap[memoryResourceName])
+	if hasCore {
+		klog.InfoS("Add resources", coreResourceName, resourceMap[coreResourceName])
+	}
 	return resourceMap
 }
 
