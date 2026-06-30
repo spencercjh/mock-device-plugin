@@ -11,7 +11,7 @@ After deployment these resources show up under `node.status.allocatable` and `no
 
 The mock plugin **does not detect hardware**. It does the following every ~30s:
 
-```
+```text
   node annotation: hami.io/node-<vendor>-register = [ {devmem, devcore, ...}, ... ]   (1)
   node capacity:   <count resource> (e.g. nvidia.com/gpu) > 0                          (2)  <- health gate
                               | mock reads
@@ -107,7 +107,7 @@ If the annotation omits `devcore`, the core count falls back to the chip-level `
 ### Hygon DCU
 
 - config block: `hygon:` | annotation: `hami.io/node-dcu-register` (**CSV**, not JSON) | count: `hygon.com/dcunum`
-- mock registers: `hygon.com/dcumem`
+- mock registers: `hygon.com/dcumem`, and -- when the config sets `resourceCoreName` -- `hygon.com/dcucores` (sum of per-card `devcore`)
 
 ```bash
 # (2) count resource: 2 DCUs
@@ -118,7 +118,7 @@ kubectl annotate node <node> \
   'hami.io/node-dcu-register=DCU-MOCK-0,2,16384,100,Z100L,0,true,0,hami-core:DCU-MOCK-1,2,16384,100,Z100L,1,true,1,hami-core:'
 # verify
 kubectl get node <node> -o json | jq '.status.allocatable|with_entries(select(.key|test("hygon.com")))'
-# expect: hygon.com/dcumem=32768
+# expect: hygon.com/dcumem=32768, hygon.com/dcucores=200  (2 cards x devcore 100)
 ```
 
 ## Ascend config compatibility (new vs legacy)
@@ -147,7 +147,7 @@ The new nested format is tried first; if that fails it falls back to the legacy 
 | Devices    | Mocking Resources |
 | :---       | :----   |
 | Nvidia GPU | `nvidia.com/gpumem`, `nvidia.com/gpumem-percentage`, `nvidia.com/gpucores` |
-| Hygon DCU  | `hygon.com/dcumem` |
+| Hygon DCU  | `hygon.com/dcumem`, `hygon.com/dcucores` (when `resourceCoreName` is set) |
 | Ascend     | `huawei.com/Ascend{chip}-memory`, `huawei.com/Ascend{chip}-core` (when `resourceCoreName` is set) |
 
 **Note:** If the counted memory is too large (e.g. > 120GB) it may display as 0. Set `memoryFactor` in the `hami-scheduler-device` ConfigMap (default 1).

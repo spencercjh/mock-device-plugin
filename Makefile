@@ -32,6 +32,9 @@ GOLANGCI_LINT := $(shell command -v golangci-lint 2>/dev/null)
 
 .DEFAULT_GOAL := help
 
+.PHONY: all
+all: build ## Alias for `build` (compatibility with standard Makefile tooling).
+
 ##@ General
 
 .PHONY: help
