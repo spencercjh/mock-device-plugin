@@ -19,6 +19,14 @@ GO          ?= go
 DOCKER      ?= docker
 # Use `make ... DOCKER=nerdctl` on containerd-only hosts.
 
+# Optional Go module proxy passed into the image build. Set it for faster builds
+# behind a slow network, e.g. `make docker-build GOPROXY=https://goproxy.cn,direct`.
+GOPROXY     ?=
+DOCKER_BUILD_ARGS :=
+ifneq ($(GOPROXY),)
+DOCKER_BUILD_ARGS += --build-arg GOPROXY=$(GOPROXY)
+endif
+
 # Detect golangci-lint availability for the lint target.
 GOLANGCI_LINT := $(shell command -v golangci-lint 2>/dev/null)
 
@@ -47,7 +55,7 @@ tidy: ## Tidy go.mod / go.sum.
 .PHONY: lint
 lint: ## Run golangci-lint (if installed).
 ifeq ($(GOLANGCI_LINT),)
-	@echo "golangci-lint not found; install: https://golangci-lint.run/usage/install/ — skipping."
+	@echo "golangci-lint not found; install: https://golangci-lint.run/usage/install/ -- skipping."
 else
 	golangci-lint run ./...
 endif
@@ -79,8 +87,8 @@ clean: ## Remove build artifacts.
 ##@ Container
 
 .PHONY: docker-build
-docker-build: ## Build the container image ($(IMG)).
-	$(DOCKER) build -t $(IMG) .
+docker-build: ## Build the container image ($(IMG)). Set GOPROXY=... for a faster module proxy.
+	$(DOCKER) build $(DOCKER_BUILD_ARGS) -t $(IMG) .
 
 .PHONY: docker-push
 docker-push: ## Push the container image ($(IMG)).
