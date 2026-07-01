@@ -76,7 +76,7 @@ func InitDevicesWithConfig(config *Config) error {
 	if amdDevice != nil {
 		device.DevicesMap[amdDevice.CommonWord()] = amdDevice
 	}*/
-	for _, dev := range ascend.InitDevices(config.VNPUs.Configs) {
+	for _, dev := range ascend.InitDevices(config.VNPUs) {
 		commonWord := dev.CommonWord()
 		device.DevicesMap[commonWord] = dev
 		klog.Infof("Ascend device %s initialized", commonWord)

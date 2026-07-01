@@ -53,7 +53,7 @@ func cards(n int, devmem, devcore int) string {
 	return "[" + strings.Join(items, ",") + "]"
 }
 
-func newDev(coreName string, aiCore, memFactor int32) *Devices {
+func newDev(coreName string, aiCore, memFactor int32, hamiVnpuCore bool) *Devices {
 	return &Devices{
 		config: VNPUConfig{
 			CommonWord:         "Ascend910B4",
@@ -63,6 +63,7 @@ func newDev(coreName string, aiCore, memFactor int32) *Devices {
 			AICore:             aiCore,
 			MemoryFactor:       memFactor,
 		},
+		hamiVnpuCore:     hamiVnpuCore,
 		nodeRegisterAnno: "hami.io/node-register-Ascend910B4",
 	}
 }
@@ -75,17 +76,20 @@ func TestGetResource_Core(t *testing.T) {
 		coreFull = "huawei.com/Ascend910B4-core"
 	)
 	tests := []struct {
-		name        string
-		dev         *Devices
-		anno        string
-		capacity    string
-		wantMem     int
-		wantCore    int
-		wantCoreKey bool
+		name string
+		dev  *Devices
+		anno string
+		// nodeHamiCore, when non-empty, sets the node "hami-vnpu-core" annotation
+		// ("true"/"false") to exercise the per-node soft-mode override.
+		nodeHamiCore string
+		capacity     string
+		wantMem      int
+		wantCore     int
+		wantCoreKey  bool
 	}{
 		{
-			name:        "1 two cards -> 100 core per card",
-			dev:         newDev(coreFull, 20, 0),
+			name:        "1 two cards -> 100 core per card (global hami-vnpu-core on)",
+			dev:         newDev(coreFull, 20, 0, true),
 			anno:        cards(2, 32768, 20),
 			capacity:    "8",
 			wantMem:     65536,
@@ -94,7 +98,7 @@ func TestGetResource_Core(t *testing.T) {
 		},
 		{
 			name:        "2 real scale (8 cards)",
-			dev:         newDev(coreFull, 20, 0),
+			dev:         newDev(coreFull, 20, 0, true),
 			anno:        cards(8, 32768, 20),
 			capacity:    "32",
 			wantMem:     262144,
@@ -103,7 +107,7 @@ func TestGetResource_Core(t *testing.T) {
 		},
 		{
 			name:        "3 annotation devcore omitted -> still 100 per card",
-			dev:         newDev(coreFull, 20, 0),
+			dev:         newDev(coreFull, 20, 0, true),
 			anno:        cards(2, 21527, 0),
 			capacity:    "8",
 			wantMem:     43054,
@@ -112,7 +116,7 @@ func TestGetResource_Core(t *testing.T) {
 		},
 		{
 			name:        "4 no resourceCoreName -> memory only (backward compat)",
-			dev:         newDev("", 20, 0),
+			dev:         newDev("", 20, 0, true),
 			anno:        cards(2, 32768, 20),
 			capacity:    "8",
 			wantMem:     65536,
@@ -121,7 +125,7 @@ func TestGetResource_Core(t *testing.T) {
 		},
 		{
 			name:        "5 MemoryFactor does not affect core",
-			dev:         newDev(coreFull, 20, 2),
+			dev:         newDev(coreFull, 20, 2, true),
 			anno:        cards(2, 16384, 20),
 			capacity:    "8",
 			wantMem:     16384, // (16384*2)/2
@@ -130,7 +134,7 @@ func TestGetResource_Core(t *testing.T) {
 		},
 		{
 			name:        "6 unhealthy node (capacity 0)",
-			dev:         newDev(coreFull, 20, 0),
+			dev:         newDev(coreFull, 20, 0, true),
 			anno:        cards(2, 32768, 20),
 			capacity:    "0",
 			wantMem:     0,
@@ -139,7 +143,7 @@ func TestGetResource_Core(t *testing.T) {
 		},
 		{
 			name:        "7 varying devcore in annotation is ignored for core",
-			dev:         newDev(coreFull, 20, 0),
+			dev:         newDev(coreFull, 20, 0, true),
 			anno:        `[{"id":"A","devmem":32768,"devcore":20,"type":"Ascend910B4","health":true},{"id":"B","index":1,"devmem":32768,"devcore":0,"type":"Ascend910B4","health":true}]`,
 			capacity:    "8",
 			wantMem:     65536,
@@ -148,12 +152,41 @@ func TestGetResource_Core(t *testing.T) {
 		},
 		{
 			name:        "8 no register annotation",
-			dev:         newDev(coreFull, 20, 0),
+			dev:         newDev(coreFull, 20, 0, true),
 			anno:        "", // overwritten below to remove annotation
 			capacity:    "8",
 			wantMem:     0,
 			wantCore:    0,
 			wantCoreKey: true,
+		},
+		{
+			name:        "9 hami-vnpu-core off globally, no node annotation -> memory only",
+			dev:         newDev(coreFull, 20, 0, false),
+			anno:        cards(2, 32768, 20),
+			capacity:    "8",
+			wantMem:     65536,
+			wantCore:    0,
+			wantCoreKey: false, // hard/template node: -core not reported
+		},
+		{
+			name:         "10 node annotation hami-vnpu-core=true overrides global off -> core reported",
+			dev:          newDev(coreFull, 20, 0, false),
+			anno:         cards(2, 32768, 20),
+			nodeHamiCore: "true",
+			capacity:     "8",
+			wantMem:      65536,
+			wantCore:     200, // 2 cards * 100
+			wantCoreKey:  true,
+		},
+		{
+			name:         "11 node annotation hami-vnpu-core=false overrides global on -> memory only",
+			dev:          newDev(coreFull, 20, 0, true),
+			anno:         cards(2, 32768, 20),
+			nodeHamiCore: "false",
+			capacity:     "8",
+			wantMem:      65536,
+			wantCore:     0,
+			wantCoreKey:  false,
 		},
 	}
 
@@ -163,6 +196,9 @@ func TestGetResource_Core(t *testing.T) {
 			if tt.anno == "" {
 				// case 8: healthy node but no register annotation at all
 				delete(node.Annotations, "hami.io/node-register-Ascend910B4")
+			}
+			if tt.nodeHamiCore != "" {
+				node.Annotations[vnpuNodeSelectorAnnotation] = tt.nodeHamiCore
 			}
 			res := node // alias
 			got := tt.dev.GetResource(res)
@@ -188,7 +224,7 @@ func TestGetResource_Core(t *testing.T) {
 func TestGetNodeDevices_RealAnnotation(t *testing.T) {
 	const realAnno = `[{"id":"7D16F664-806034F3-5BC13B72-D0D00485-104301E3","count":4,"devmem":32768,"devcore":20,"type":"Ascend910B4","health":true,"custominfo":{"NetworkID":0},"devicepairscore":{}},{"id":"16DFF664-806050DD-5CE21592-87D28485-104301E3","index":1,"count":4,"devmem":32768,"devcore":20,"type":"Ascend910B4","health":true,"custominfo":{"NetworkID":0},"devicepairscore":{}}]`
 
-	dev := newDev("huawei.com/Ascend910B4-core", 20, 0)
+	dev := newDev("huawei.com/Ascend910B4-core", 20, 0, true)
 	node := newAscendNode("Ascend910B4", "huawei.com/Ascend910B4", realAnno, "32")
 
 	devs, err := dev.GetNodeDevices(node)

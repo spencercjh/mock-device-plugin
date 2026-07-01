@@ -35,6 +35,13 @@ import (
 // card's total core as 100 regardless of the physical AI-core count.
 const ascendCardCorePercentage = 100
 
+// vnpuNodeSelectorAnnotation is the node annotation the real ascend-device-plugin
+// writes to advertise whether a node runs in hami-vnpu-core (soft-partition) mode.
+// The HAMi scheduler reads it as the authoritative per-node signal (it takes
+// precedence over the global vnpus.hamiVnpuCore config). See ascend-device-plugin
+// register.go and HAMi pkg/device/ascend/device.go (VNPUNodeSelectorAnnotation).
+const vnpuNodeSelectorAnnotation = "hami-vnpu-core"
+
 type Template struct {
 	Name   string `yaml:"name"`
 	Memory int64  `yaml:"memory"`
@@ -57,16 +64,20 @@ type VNPUConfig struct {
 }
 
 type Devices struct {
-	config           VNPUConfig
+	config VNPUConfig
+	// hamiVnpuCore is the global vnpus.hamiVnpuCore default for this chip. It is
+	// overridden per node by the "hami-vnpu-core" node annotation (see GetResource).
+	hamiVnpuCore     bool
 	nodeRegisterAnno string
 }
 
-func InitDevices(config []VNPUConfig) []*Devices {
+func InitDevices(vnpus VNPUs) []*Devices {
 	var devs []*Devices
-	for _, vnpu := range config {
+	for _, vnpu := range vnpus.Configs {
 		commonWord := vnpu.CommonWord
 		dev := &Devices{
 			config:           vnpu,
+			hamiVnpuCore:     vnpus.HamiVnpuCore,
 			nodeRegisterAnno: fmt.Sprintf("hami.io/node-register-%s", commonWord),
 		}
 		sort.Slice(dev.config.Templates, func(i, j int) bool {
@@ -107,12 +118,20 @@ func (dev *Devices) GetResource(n *corev1.Node) map[string]int {
 	resourceMap := map[string]int{
 		resourceName: 0,
 	}
-	// In hami-vnpu-core soft-partition mode the config declares resourceCoreName
-	// (e.g. huawei.com/Ascend910B4-core). Register the AI core as an allocatable
-	// resource too, otherwise vNPU pods that request core cannot be scheduled.
-	// core and memory must share resourceMap from the first call so that
-	// MockLister registers both plugins in a single shot.
-	hasCore := dev.config.ResourceCoreName != ""
+	// huawei.com/<chip>-core is the soft-partition (hami-vnpu-core) core resource:
+	// a percentage where a whole card is 100. Only report it when the node runs in
+	// hami-vnpu-core mode, mirroring the real ascend-device-plugin (which reports
+	// the 100-per-card core only when IsHamiVnpuCore) and the HAMi scheduler, which
+	// derives nodeSupportHamiCore as: the node "hami-vnpu-core" annotation if present,
+	// otherwise the global vnpus.hamiVnpuCore config. On a non-soft node the scheduler
+	// filters out any pod requesting -core (ModeNotFit), so registering it there would
+	// be a dead resource. core and memory must share resourceMap from the first call
+	// so that MockLister registers both plugins in a single shot.
+	nodeSupportHamiCore := dev.hamiVnpuCore
+	if v, ok := n.Annotations[vnpuNodeSelectorAnnotation]; ok {
+		nodeSupportHamiCore = v == "true"
+	}
+	hasCore := dev.config.ResourceCoreName != "" && nodeSupportHamiCore
 	var coreResourceName string
 	if hasCore {
 		coreResourceName = device.GetResourceName(dev.config.ResourceCoreName)

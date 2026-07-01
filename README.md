@@ -88,7 +88,7 @@ kubectl get node <node> -o json | jq '.status.allocatable|with_entries(select(.k
 ### Ascend NPU (e.g. 910B4)
 
 - config block: `vnpus.configs` (entry for `910B4`) | annotation: `hami.io/node-register-Ascend910B4` (JSON) | count: `huawei.com/Ascend910B4`
-- mock registers: `huawei.com/Ascend910B4-memory`, and -- when the config sets `resourceCoreName` -- `huawei.com/Ascend910B4-core`
+- mock registers: `huawei.com/Ascend910B4-memory`, and -- **only when the node runs in `hami-vnpu-core` soft mode** (see below) -- `huawei.com/Ascend910B4-core`
 
 ```bash
 # (2) count resource: 2 cards x VDeviceCount(4) = 8
@@ -97,12 +97,18 @@ kubectl patch node <node> --subresource=status --type=json \
 # (1) annotation: 2 x 910B4 (devmem=32768 MB, devcore=20), matching the real ascend-device-plugin report
 kubectl annotate node <node> \
   'hami.io/node-register-Ascend910B4=[{"id":"MOCK-0","count":4,"devmem":32768,"devcore":20,"type":"Ascend910B4","health":true},{"id":"MOCK-1","index":1,"count":4,"devmem":32768,"devcore":20,"type":"Ascend910B4","health":true}]'
+# (1b) soft mode: mark the node as hami-vnpu-core so the -core resource is reported.
+# Either set vnpus.hamiVnpuCore: true globally in the ConfigMap, or annotate this node
+# (the node annotation overrides the global setting, same precedence as the real plugin):
+kubectl annotate node <node> hami-vnpu-core=true
 # verify
 kubectl get node <node> -o json | jq '.status.allocatable|with_entries(select(.key|test("Ascend910B4")))'
 # expect: huawei.com/Ascend910B4-memory=65536, huawei.com/Ascend910B4-core=200  (2 cards x 100)
 ```
 
 The Ascend `-core` resource is **percentage-based**: each physical card contributes **100** (a whole card), independent of the annotation's `devcore`. HAMi caps a core request at 100 and, in `hami-vnpu-core` soft mode, treats a card's total core as 100.
+
+**When is `-core` reported?** Only on a node that runs in `hami-vnpu-core` (soft-partition) mode, mirroring the real ascend-device-plugin and the HAMi scheduler. Mode is decided by: the node's `hami-vnpu-core` annotation if present, otherwise the global `vnpus.hamiVnpuCore` in the ConfigMap (`true`/`false`, default `false`). On a hard/template node (`hami-vnpu-core` off) the HAMi scheduler filters out any pod that requests `-core` (`ModeNotFit`), so the mock does not register `-core` there. There is **no ascend-device-plugin** in a mock environment, so nothing writes the `hami-vnpu-core` node annotation automatically -- set it yourself (like the `node-register` annotation and the count resource).
 
 ### Hygon DCU
 
@@ -128,10 +134,10 @@ The Ascend `vnpus` config has two layouts and the plugin accepts **both**:
 ```yaml
 # New (HAMi >= v2.9.0): nested object
 vnpus:
-  hamiVnpuCore: false
+  hamiVnpuCore: true          # node runs in soft mode -> the -core resource is reported
   configs:
     - chipName: 910B4
-      resourceCoreName: huawei.com/Ascend910B4-core   # enables the -core resource
+      resourceCoreName: huawei.com/Ascend910B4-core   # name of the -core resource
       ...
 ```
 ```yaml
@@ -148,7 +154,7 @@ The new nested format is tried first; if that fails it falls back to the legacy 
 | :---       | :----   |
 | Nvidia GPU | `nvidia.com/gpumem`, `nvidia.com/gpumem-percentage`, `nvidia.com/gpucores` |
 | Hygon DCU  | `hygon.com/dcumem`, `hygon.com/dcucores` (when `resourceCoreName` is set) |
-| Ascend     | `huawei.com/Ascend{chip}-memory`, `huawei.com/Ascend{chip}-core` (when `resourceCoreName` is set) |
+| Ascend     | `huawei.com/Ascend{chip}-memory`, `huawei.com/Ascend{chip}-core` (when `resourceCoreName` is set **and** the node is in `hami-vnpu-core` mode) |
 
 **Note:** If the counted memory is too large (e.g. > 120GB) it may display as 0. Set `memoryFactor` in the `hami-scheduler-device` ConfigMap (default 1).
 

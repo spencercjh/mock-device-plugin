@@ -93,7 +93,7 @@ func TestInitDevices(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			devices := InitDevices(tt.configs)
+			devices := InitDevices(VNPUs{Configs: tt.configs})
 
 			if len(devices) != tt.expectedCount {
 				t.Errorf("expected %d devices, got %d", tt.expectedCount, len(devices))
