@@ -26,12 +26,14 @@ import (
 func TestInitDevices(t *testing.T) {
 	tests := []struct {
 		name           string
+		hamiVnpuCore   bool
 		configs        []VNPUConfig
 		expectedCount  int
 		expectedCommon []string
 	}{
 		{
-			name: "single device config",
+			name:         "single device config",
+			hamiVnpuCore: true,
 			configs: []VNPUConfig{
 				{
 					CommonWord:         "Ascend310P",
@@ -53,7 +55,8 @@ func TestInitDevices(t *testing.T) {
 			expectedCommon: []string{"Ascend310P"},
 		},
 		{
-			name: "multiple device configs",
+			name:         "multiple device configs",
+			hamiVnpuCore: false,
 			configs: []VNPUConfig{
 				{
 					CommonWord:         "Ascend310P",
@@ -93,13 +96,16 @@ func TestInitDevices(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			devices := InitDevices(tt.configs)
+			devices := InitDevices(VNPUs{HamiVnpuCore: tt.hamiVnpuCore, Configs: tt.configs})
 
 			if len(devices) != tt.expectedCount {
 				t.Errorf("expected %d devices, got %d", tt.expectedCount, len(devices))
 			}
 
 			for i, dev := range devices {
+				if dev.hamiVnpuCore != tt.hamiVnpuCore {
+					t.Errorf("device %d: hamiVnpuCore = %v, want %v", i, dev.hamiVnpuCore, tt.hamiVnpuCore)
+				}
 				if tt.expectedCommon[i] != dev.CommonWord() {
 					t.Errorf("device %d: expected CommonWord %s, got %s",
 						i, tt.expectedCommon[i], dev.CommonWord())

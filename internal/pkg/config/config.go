@@ -48,7 +48,7 @@ type Config struct {
 	KunlunConfig    kunlun.KunlunConfig       `yaml:"kunlun"`
 	AWSNeuronConfig awsneuron.AWSNeuronConfig `yaml:"awsneuron"`
 	AMDGPUConfig    amd.AMDConfig             `yaml:"amd"`
-	VNPUs           []ascend.VNPUConfig       `yaml:"vnpus"`
+	VNPUs           ascend.VNPUs              `yaml:"vnpus"`
 }
 
 var (

@@ -60,5 +60,40 @@ func TestDCUDevices_GetResource(t *testing.T) {
 			t.Errorf("Expected total memory %d, got %d", expectedTotalMemory, result[resourceName])
 		}
 
+		// cores are summed from per-card devcore (6 cards x 100)
+		coreName := device.GetResourceName(config.ResourceCoreName)
+		expectedTotalCores := 100 * 6
+		if result[coreName] != expectedTotalCores {
+			t.Errorf("Expected total cores %d, got %d", expectedTotalCores, result[coreName])
+		}
+	})
+
+	t.Run("WithoutResourceCoreName", func(t *testing.T) {
+		// When resourceCoreName is not configured, only memory is registered.
+		cfg := HygonConfig{
+			ResourceCountName:  "hygon.com/dcunum",
+			ResourceMemoryName: "hygon.com/dcumem",
+		}
+		dev := InitDCUDevice(cfg)
+		node := corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-node-2",
+				Annotations: map[string]string{
+					RegisterAnnos: "DCU-A,4,65520,100,DCU-K100_AI,0,true,0,hami:",
+				},
+			},
+			Status: corev1.NodeStatus{
+				Capacity: corev1.ResourceList{
+					corev1.ResourceName(cfg.ResourceCountName): resource.MustParse("4"),
+				},
+			},
+		}
+		result := dev.GetResource(&node)
+		if _, ok := result["dcucores"]; ok {
+			t.Errorf("did not expect a core resource key, got map %v", result)
+		}
+		if result[device.GetResourceName(cfg.ResourceMemoryName)] != 65520 {
+			t.Errorf("expected memory 65520, got %d", result[device.GetResourceName(cfg.ResourceMemoryName)])
+		}
 	})
 }
