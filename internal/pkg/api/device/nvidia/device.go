@@ -30,6 +30,30 @@ import (
 	"k8s.io/klog/v2"
 )
 
+type inventoryConfigError struct {
+	err error
+}
+
+func (e *inventoryConfigError) Error() string {
+	return e.err.Error()
+}
+
+func (e *inventoryConfigError) Unwrap() error {
+	return e.err
+}
+
+type inventoryDecorationError struct {
+	err error
+}
+
+func (e *inventoryDecorationError) Error() string {
+	return e.err.Error()
+}
+
+func (e *inventoryDecorationError) Unwrap() error {
+	return e.err
+}
+
 const (
 	RegisterAnnos        = "hami.io/node-nvidia-register"
 	RegisterGPUPairScore = "hami.io/node-nvidia-score"
@@ -180,17 +204,20 @@ func (dev *NvidiaGPUDevices) getInventoryDevices(n *corev1.Node) ([]*device.Devi
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false, nil
 		}
-		return nil, false, err
+		return nil, false, &inventoryConfigError{err: err}
 	}
 
 	nodedevices, active, err := inv.ResolveNvidiaDevices(n)
-	if err != nil || !active {
-		return nil, active, err
+	if err != nil {
+		return nil, active, &inventoryConfigError{err: err}
+	}
+	if !active {
+		return nil, false, nil
 	}
 
 	decorated, err := dev.decorateDevices(n, nodedevices)
 	if err != nil {
-		return nil, false, err
+		return nil, true, &inventoryDecorationError{err: err}
 	}
 
 	return decorated, true, nil
@@ -249,7 +276,12 @@ func (dev *NvidiaGPUDevices) GetResource(n *corev1.Node) map[string]int {
 
 	devs, active, err := dev.getInventoryDevices(n)
 	if err != nil {
-		klog.Fatalf("failed to load mock inventory for node %s: %v", n.Name, err)
+		var configErr *inventoryConfigError
+		if errors.As(err, &configErr) {
+			klog.Fatalf("failed to resolve mock inventory for node %s: %v", n.Name, err)
+		}
+		klog.ErrorS(err, "failed to decorate inventory-backed devices", "node", n.Name)
+		return resourceMap
 	}
 	if active {
 		return dev.sumResources(devs)

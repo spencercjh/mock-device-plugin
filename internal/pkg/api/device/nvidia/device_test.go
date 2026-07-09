@@ -248,6 +248,54 @@ groups:
 	}
 }
 
+func TestGetResourceSkipsInventoryNodeWhenPairScoreAnnotationMalformed(t *testing.T) {
+	inventoryPath := writeInventoryFile(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        index: 0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+`)
+
+	config := NvidiaConfig{
+		ResourceCountName:            "nvidia.com/gpu",
+		ResourceMemoryName:           "nvidia.com/gpu-memory",
+		ResourceCoreName:             "nvidia.com/gpu-core",
+		ResourceMemoryPercentageName: "nvidia.com/gpu-memory-percentage",
+	}
+	dev := InitNvidiaDevice(config, inventoryPath)
+
+	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-a100-0",
+			Labels: map[string]string{"hami.io/mock-group": "gpu-a100"},
+			Annotations: map[string]string{
+				RegisterGPUPairScore: "not-json",
+			},
+		},
+	}
+
+	got := dev.GetResource(&node)
+	if got["gpu-memory"] != 0 {
+		t.Fatalf("expected malformed pair-score annotation to skip inventory resources, got memory %d", got["gpu-memory"])
+	}
+	if got["gpu-core"] != 0 {
+		t.Fatalf("expected malformed pair-score annotation to skip inventory resources, got core %d", got["gpu-core"])
+	}
+	if got["gpu-memory-percentage"] != 0 {
+		t.Fatalf("expected malformed pair-score annotation to skip inventory resources, got memory percentage %d", got["gpu-memory-percentage"])
+	}
+}
+
 func TestGetNodeDevices(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -392,5 +440,40 @@ groups:
 	_, err := dev.GetNodeDevices(&node)
 	if err == nil {
 		t.Fatalf("expected invalid inventory to return an error")
+	}
+}
+
+func TestGetNodeDevicesReturnsPairScoreErrorForInventoryNode(t *testing.T) {
+	inventoryPath := writeInventoryFile(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        index: 0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+`)
+
+	dev := InitNvidiaDevice(NvidiaConfig{}, inventoryPath)
+	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-a100-0",
+			Labels: map[string]string{"hami.io/mock-group": "gpu-a100"},
+			Annotations: map[string]string{
+				RegisterGPUPairScore: "not-json",
+			},
+		},
+	}
+
+	_, err := dev.GetNodeDevices(&node)
+	if err == nil {
+		t.Fatalf("expected malformed pair-score annotation to return an error")
 	}
 }
