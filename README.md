@@ -9,27 +9,41 @@ After deployment these resources show up under `node.status.allocatable` and `no
 
 ## How it works (read this first)
 
-The mock plugin **does not detect hardware**. It does the following every ~30s:
+The mock plugin **does not detect hardware**. It refreshes every ~30s and has two input paths:
 
 ```text
-  node annotation: hami.io/node-<vendor>-register = [ {devmem, devcore, ...}, ... ]   (1)
-  node capacity:   <count resource> (e.g. nvidia.com/gpu) > 0                          (2)  <- health gate
-                              | mock reads
-                              v
-  registers into allocatable: <vendor>/...mem , <vendor>/...cores , ...
+  recommended for NVIDIA:
+    ConfigMap file /mock-inventory/mock-inventory.yaml
+      -> groupBy.labelKey selects the node label
+      -> groups.<label-value>.nvidia[] becomes the active device list
+
+  legacy fallback:
+    node annotation: hami.io/node-<vendor>-register = [ {devmem, devcore, ...}, ... ]   (1)
+    node capacity:   <count resource> (e.g. nvidia.com/gpu) > 0                          (2)  <- health gate
+
+  active device list
+      -> registers into allocatable: <vendor>/...mem , <vendor>/...cores , ...
 ```
 
-On a **real** cluster, (1) and (2) are produced by the real device plugin. In a **mock-only** (no hardware) environment you provide them yourself:
+Today that means:
+
+- **NVIDIA primary path:** mount the optional `hami-mock-inventory` ConfigMap, label the node with `groupBy.labelKey`, and let the plugin read `groups.<group>.nvidia[]`.
+- **NVIDIA fallback path:** if the inventory file is missing, the node label is absent, or the label does not match a populated group, the plugin falls back to the legacy manual path.
+- **NVIDIA inventory errors:** malformed or otherwise unreadable inventory content is **not** a silent fallback case. The runtime surfaces the error, and `GetResource()` may fail fast until you fix the file or remove the inventory input.
+- **Ascend / Hygon:** these vendors still use the legacy manual path today.
+
+On a **real** cluster, the legacy annotation and count resource are normally produced by the real device plugin. In a **mock-only** (no hardware) environment you provide them yourself when using the fallback/manual path:
 
 - **(1) the `node-<vendor>-register` annotation** describing the fake cards -- `kubectl annotate`.
 - **(2) the count extended resource** (e.g. `nvidia.com/gpu`) -- patched onto the node `status`.
 
-> There is **no auto-labeller** in this repo, so (1) and (2) are manual today. Forgetting them is the usual cause of `device xxx is unhealthy` / `no allocation` -- see issues #14 / #16.
+> Inventory updates are **not instant**. ConfigMap-to-file propagation is kubelet-driven (commonly up to about 1 minute), and the mock plugin only refreshes every 30s, so end-to-end visibility can lag by up to roughly **90 seconds** after you change the ConfigMap or node label.
 
 ## Prerequisites
 
 - Kubernetes >= v1.18
 - The `hami-scheduler-device` ConfigMap (the device config). If HAMi is installed it already exists; otherwise create it from [device-configmap.yaml](https://github.com/Project-HAMi/HAMi/blob/master/charts/hami/templates/scheduler/device-configmap.yaml).
+- Optional but recommended for NVIDIA: a `hami-mock-inventory` ConfigMap containing `mock-inventory.yaml`. The shipped DaemonSet mounts it as an optional directory, so the plugin can still start and fall back to the legacy path when the ConfigMap is absent.
 
 ## Deployment
 
@@ -42,14 +56,18 @@ kubectl apply -f k8s-mock-plugin.yaml
 
 ## Understanding the values
 
-The mock **derives the registered resources from the annotation, not from the count resource.** This trips people up, so to be explicit:
+The mock **derives the registered resources from the active device list, not from the count resource.** This trips people up, so to be explicit:
 
-- **Number of fake cards = the number of entries in the annotation array** (not the count value).
+- For **NVIDIA on the recommended path**, the active device list is `groups.<matched-node-group>.nvidia[]` from `mock-inventory.yaml`.
+- For **legacy/manual mode** (including Ascend and Hygon), the active device list is the `node-<vendor>-register` annotation.
+
+- **Number of fake cards = the number of entries in the active device list** (not the count value).
 - Registered `...-memory` = **sum of `devmem`** over all entries.
 - Registered `...-cores` / `...-core` = **sum of `devcore`** over all entries.
-- The **count extended resource is only a health gate**: its value just needs to be `> 0`. It does **not** affect the registered memory/cores. By convention it is set to `cards x splits-per-card` (e.g. Ascend `2 x VDeviceCount(4) = 8`), but `1` would work equally well for the memory/cores to appear.
+- On the **legacy/manual path**, the count extended resource is only a health gate: its value just needs to be `> 0`. It does **not** affect the registered memory/cores. By convention it is set to `cards x splits-per-card` (e.g. Ascend `2 x VDeviceCount(4) = 8`), but `1` would work equally well for the memory/cores to appear.
+- On the **NVIDIA inventory-active path**, the plugin returns file-backed resources directly and bypasses that legacy health-gate check. Keep the `nvidia.com/gpu` patch in your mock setup because operators typically still want the vendor count resource present on the node, but it is not what drives the inventory-backed `gpumem` / `gpucores` totals.
 
-Annotation entry fields:
+Device entry fields:
 
 | field | meaning |
 | :-- | :-- |
@@ -66,12 +84,54 @@ Annotation entry fields:
 
 ## Usage by vendor
 
-To mock one card you always need the **three pieces**: the vendor **config block** (in the `hami-scheduler-device` ConfigMap, gives the resource names), the **count extended resource** (passes the health gate), and the **node-register annotation** (describes the fake cards). Replace `<node>` below with your target node. Resource names follow the ConfigMap (HAMi defaults shown). See [Understanding the values](#understanding-the-values) for how the numbers are derived.
+To mock one card you always need the vendor **config block** (in the `hami-scheduler-device` ConfigMap, gives the resource names) plus an **active device list** that describes the fake cards. For NVIDIA the active list can come from the recommended ConfigMap inventory or the legacy node annotation; for Ascend and Hygon it still comes from the node annotation. In most end-to-end mock setups you will also patch the vendor **count extended resource** onto the node. On the legacy/manual path that count resource is the health gate; on the NVIDIA inventory-active path it is still commonly present on the node, but it is not what drives the inventory-backed resource totals. Replace `<node>` below with your target node. Resource names follow the ConfigMap (HAMi defaults shown). See [Understanding the values](#understanding-the-values) for how the numbers are derived.
 
 ### NVIDIA (e.g. A100-80GB)
 
 - config block: `nvidia:` | annotation: `hami.io/node-nvidia-register` (JSON) | count: `nvidia.com/gpu`
 - mock registers: `nvidia.com/gpumem`, `nvidia.com/gpucores`, `nvidia.com/gpumem-percentage`
+
+#### Recommended: ConfigMap + node-group label
+
+Create a file-backed inventory, label the node into one of its groups, and keep the `nvidia.com/gpu` patch in place as part of the overall mock node setup:
+
+```bash
+cat > mock-inventory.yaml <<'EOF'
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        index: 0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+EOF
+
+kubectl -n kube-system create configmap hami-mock-inventory \
+  --from-file=mock-inventory.yaml=./mock-inventory.yaml \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl label node <node> hami.io/mock-group=gpu-a100 --overwrite
+
+kubectl patch node <node> --subresource=status --type=json \
+  -p '[{"op":"add","path":"/status/capacity/nvidia.com~1gpu","value":"10"}]'
+
+# verify after ConfigMap sync + plugin refresh (allow up to ~90s)
+kubectl get node <node> -o json | jq '.status.allocatable|with_entries(select(.key|test("nvidia.com")))'
+# expect: nvidia.com/gpu=10, nvidia.com/gpumem=81920, nvidia.com/gpucores=100, nvidia.com/gpumem-percentage=100
+```
+
+If the ConfigMap/file is missing, the node label is absent, or the label does not match a populated group, the plugin falls back to the legacy annotation path below.
+
+If the inventory file exists but is malformed or otherwise unreadable, that is not a silent fallback case. Fix the file contents or remove the inventory input so the plugin can resume normal operation.
+
+#### Legacy fallback: manual annotation
 
 ```bash
 # (2) count resource: splitCount=10 -> one card advertises 10

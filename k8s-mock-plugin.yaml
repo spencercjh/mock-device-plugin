@@ -19,7 +19,7 @@ spec:
       - key: CriticalAddonsOnly
         operator: Exists
       containers:
-      - image: projecthami/mock-device-plugin:latest 
+      - image: projecthami/mock-device-plugin:latest
         name: hami-mock-dp-cntr
         env:
           - name: NODE_NAME
@@ -30,6 +30,7 @@ spec:
           - ./k8s-device-plugin
           - -v=5
           - --device-config-file=/device-config.yaml
+          - --mock-inventory-file=/mock-inventory/mock-inventory.yaml
         volumeMounts:
           - name: dp
             mountPath: /var/lib/kubelet/device-plugins
@@ -38,6 +39,9 @@ spec:
           - name: device-config
             mountPath: /device-config.yaml
             subPath: device-config.yaml
+          - name: mock-inventory
+            mountPath: /mock-inventory
+            readOnly: true
       volumes:
         - name: dp
           hostPath:
@@ -48,4 +52,7 @@ spec:
         - name: device-config
           configMap:
             name: hami-scheduler-device
-
+        - name: mock-inventory
+          configMap:
+            name: hami-mock-inventory
+            optional: true
