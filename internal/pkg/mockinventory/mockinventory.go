@@ -27,10 +27,10 @@ import (
 )
 
 type Inventory struct {
-	APIVersion string           `yaml:"apiVersion"`
-	Kind       string           `yaml:"kind"`
-	GroupBy    GroupBy          `yaml:"groupBy"`
-	Groups     map[string]Group `yaml:"groups"`
+	APIVersion string         `yaml:"apiVersion"`
+	Kind       string         `yaml:"kind"`
+	GroupBy    GroupBy        `yaml:"groupBy"`
+	Groups     map[string]any `yaml:"groups"`
 }
 
 type GroupBy struct {
@@ -38,7 +38,23 @@ type GroupBy struct {
 }
 
 type Group struct {
-	Nvidia []*device.DeviceInfo `yaml:"nvidia"`
+	Nvidia []*inventoryDevice `yaml:"nvidia"`
+}
+
+type inventoryDevice struct {
+	ID              *string                 `yaml:"id"`
+	Index           *uint                   `yaml:"index"`
+	Count           *int32                  `yaml:"count"`
+	Devmem          *int32                  `yaml:"devmem"`
+	Devcore         *int32                  `yaml:"devcore"`
+	Type            *string                 `yaml:"type"`
+	Numa            *int                    `yaml:"numa"`
+	Mode            *string                 `yaml:"mode"`
+	MIGTemplate     []device.Geometry       `yaml:"migtemplate"`
+	Health          *bool                   `yaml:"health"`
+	DeviceVendor    *string                 `yaml:"devicevendor"`
+	CustomInfo      map[string]any          `yaml:"custominfo"`
+	DevicePairScore *device.DevicePairScore `yaml:"devicepairscore"`
 }
 
 func Load(path string) (*Inventory, error) {
@@ -48,7 +64,7 @@ func Load(path string) (*Inventory, error) {
 	}
 
 	var inv Inventory
-	if err := yaml.Unmarshal(data, &inv); err != nil {
+	if err := yaml.UnmarshalStrict(data, &inv); err != nil {
 		return nil, err
 	}
 	if err := inv.Validate(); err != nil {
@@ -62,36 +78,6 @@ func (inv *Inventory) Validate() error {
 	if inv.GroupBy.LabelKey == "" {
 		return fmt.Errorf("groupBy.labelKey is required")
 	}
-
-	for groupName, group := range inv.Groups {
-		seenIDs := make(map[string]struct{}, len(group.Nvidia))
-		seenIndexes := make(map[uint]struct{}, len(group.Nvidia))
-
-		for _, gpu := range group.Nvidia {
-			if gpu == nil {
-				return fmt.Errorf("groups.%s.nvidia contains nil entry", groupName)
-			}
-			if gpu.ID == "" {
-				return fmt.Errorf("groups.%s.nvidia contains empty id", groupName)
-			}
-			if gpu.Type == "" {
-				return fmt.Errorf("groups.%s.nvidia contains empty type", groupName)
-			}
-			if _, ok := seenIDs[gpu.ID]; ok {
-				return fmt.Errorf("groups.%s.nvidia contains duplicate id %q", groupName, gpu.ID)
-			}
-			if _, ok := seenIndexes[gpu.Index]; ok {
-				return fmt.Errorf("groups.%s.nvidia contains duplicate index %d", groupName, gpu.Index)
-			}
-			if gpu.Count < 0 || gpu.Devmem < 0 || gpu.Devcore < 0 || gpu.Numa < 0 {
-				return fmt.Errorf("groups.%s.nvidia contains negative numeric value", groupName)
-			}
-
-			seenIDs[gpu.ID] = struct{}{}
-			seenIndexes[gpu.Index] = struct{}{}
-		}
-	}
-
 	return nil
 }
 
@@ -105,12 +91,147 @@ func (inv *Inventory) ResolveNvidiaDevices(node *corev1.Node) ([]*device.DeviceI
 		return nil, false, nil
 	}
 
-	group, ok := inv.Groups[groupName]
-	if !ok || len(group.Nvidia) == 0 {
+	groupData, ok := inv.Groups[groupName]
+	if !ok {
 		return nil, false, nil
 	}
 
-	return cloneDevices(group.Nvidia), true, nil
+	group, err := decodeGroup(groupName, groupData)
+	if err != nil {
+		return nil, true, err
+	}
+	if len(group.Nvidia) == 0 {
+		return nil, false, nil
+	}
+
+	devs, err := group.nvidiaDevices(groupName)
+	if err != nil {
+		return nil, true, err
+	}
+
+	return cloneDevices(devs), true, nil
+}
+
+func decodeGroup(groupName string, data any) (*Group, error) {
+	groupYAML, err := yaml.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("marshal groups.%s: %w", groupName, err)
+	}
+
+	var group Group
+	if err := yaml.UnmarshalStrict(groupYAML, &group); err != nil {
+		return nil, fmt.Errorf("decode groups.%s: %w", groupName, err)
+	}
+
+	return &group, nil
+}
+
+func (g *Group) nvidiaDevices(groupName string) ([]*device.DeviceInfo, error) {
+	seenIDs := make(map[string]struct{}, len(g.Nvidia))
+	seenIndexes := make(map[uint]struct{}, len(g.Nvidia))
+	devs := make([]*device.DeviceInfo, 0, len(g.Nvidia))
+
+	for idx, gpu := range g.Nvidia {
+		devInfo, err := gpu.toDeviceInfo(groupName, idx)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seenIDs[devInfo.ID]; ok {
+			return nil, fmt.Errorf("groups.%s.nvidia[%d].id %q is duplicated", groupName, idx, devInfo.ID)
+		}
+		if _, ok := seenIndexes[devInfo.Index]; ok {
+			return nil, fmt.Errorf("groups.%s.nvidia[%d].index %d is duplicated", groupName, idx, devInfo.Index)
+		}
+		if devInfo.Count < 0 || devInfo.Devmem < 0 || devInfo.Devcore < 0 || devInfo.Numa < 0 {
+			return nil, fmt.Errorf("groups.%s.nvidia[%d] contains negative numeric value", groupName, idx)
+		}
+
+		seenIDs[devInfo.ID] = struct{}{}
+		seenIndexes[devInfo.Index] = struct{}{}
+		devs = append(devs, devInfo)
+	}
+
+	return devs, nil
+}
+
+func (d *inventoryDevice) toDeviceInfo(groupName string, index int) (*device.DeviceInfo, error) {
+	if d == nil {
+		return nil, fmt.Errorf("groups.%s.nvidia[%d] is nil", groupName, index)
+	}
+
+	id, err := requiredString(groupName, index, "id", d.ID)
+	if err != nil {
+		return nil, err
+	}
+	deviceType, err := requiredString(groupName, index, "type", d.Type)
+	if err != nil {
+		return nil, err
+	}
+	deviceIndex, err := requiredValue(groupName, index, "index", d.Index)
+	if err != nil {
+		return nil, err
+	}
+	count, err := requiredValue(groupName, index, "count", d.Count)
+	if err != nil {
+		return nil, err
+	}
+	devmem, err := requiredValue(groupName, index, "devmem", d.Devmem)
+	if err != nil {
+		return nil, err
+	}
+	devcore, err := requiredValue(groupName, index, "devcore", d.Devcore)
+	if err != nil {
+		return nil, err
+	}
+	health, err := requiredValue(groupName, index, "health", d.Health)
+	if err != nil {
+		return nil, err
+	}
+
+	devInfo := &device.DeviceInfo{
+		ID:          id,
+		Index:       deviceIndex,
+		Count:       count,
+		Devmem:      devmem,
+		Devcore:     devcore,
+		Type:        deviceType,
+		Health:      health,
+		MIGTemplate: cloneMigTemplate(d.MIGTemplate),
+		CustomInfo:  maps.Clone(d.CustomInfo),
+	}
+	if d.Numa != nil {
+		devInfo.Numa = *d.Numa
+	}
+	if d.Mode != nil {
+		devInfo.Mode = *d.Mode
+	}
+	if d.DeviceVendor != nil {
+		devInfo.DeviceVendor = *d.DeviceVendor
+	}
+	if d.DevicePairScore != nil {
+		devInfo.DevicePairScore = cloneDevicePairScore(*d.DevicePairScore)
+	}
+
+	return devInfo, nil
+}
+
+func requiredString(groupName string, index int, field string, value *string) (string, error) {
+	result, err := requiredValue(groupName, index, field, value)
+	if err != nil {
+		return "", err
+	}
+	if result == "" {
+		return "", fmt.Errorf("groups.%s.nvidia[%d].%s is required", groupName, index, field)
+	}
+	return result, nil
+}
+
+func requiredValue[T any](groupName string, index int, field string, value *T) (T, error) {
+	var zero T
+	if value == nil {
+		return zero, fmt.Errorf("groups.%s.nvidia[%d].%s is required", groupName, index, field)
+	}
+	return *value, nil
 }
 
 func cloneDevices(in []*device.DeviceInfo) []*device.DeviceInfo {

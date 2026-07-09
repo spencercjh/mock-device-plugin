@@ -3,6 +3,7 @@ package mockinventory
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/HAMi/mock-device-plugin/internal/pkg/api/device"
@@ -22,8 +23,33 @@ func writeInventoryFile(t *testing.T, body string) string {
 	return path
 }
 
+func loadInventory(t *testing.T, body string) *Inventory {
+	t.Helper()
+
+	inv, err := Load(writeInventoryFile(t, body))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	return inv
+}
+
+func resolveNvidiaDevices(t *testing.T, body string, labels map[string]string) ([]*device.DeviceInfo, bool, error) {
+	t.Helper()
+
+	inv := loadInventory(t, body)
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-0",
+			Labels: labels,
+		},
+	}
+
+	return inv.ResolveNvidiaDevices(node)
+}
+
 func TestLoadResolveNvidiaDevicesForMatchingGroup(t *testing.T) {
-	path := writeInventoryFile(t, `
+	devs, active, err := resolveNvidiaDevices(t, `
 apiVersion: mock.hami.io/v1alpha1
 kind: MockInventory
 groupBy:
@@ -38,21 +64,7 @@ groups:
         devcore: 100
         count: 10
         health: true
-`)
-
-	inv, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-
-	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "node-a100-0",
-			Labels: map[string]string{"hami.io/mock-group": "gpu-a100"},
-		},
-	}
-
-	devs, active, err := inv.ResolveNvidiaDevices(node)
+`, map[string]string{"hami.io/mock-group": "gpu-a100"})
 	if err != nil {
 		t.Fatalf("ResolveNvidiaDevices() error = %v", err)
 	}
@@ -68,7 +80,7 @@ groups:
 }
 
 func TestResolveNvidiaDevicesWithoutMatchingLabelFallsBack(t *testing.T) {
-	path := writeInventoryFile(t, `
+	devs, active, err := resolveNvidiaDevices(t, `
 apiVersion: mock.hami.io/v1alpha1
 kind: MockInventory
 groupBy:
@@ -83,21 +95,7 @@ groups:
         devcore: 100
         count: 10
         health: true
-`)
-
-	inv, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-
-	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "node-no-group",
-			Labels: map[string]string{},
-		},
-	}
-
-	devs, active, err := inv.ResolveNvidiaDevices(node)
+`, nil)
 	if err != nil {
 		t.Fatalf("ResolveNvidiaDevices() error = %v", err)
 	}
@@ -109,8 +107,55 @@ groups:
 	}
 }
 
+func TestResolveNvidiaDevicesWithoutNvidiaSectionFallsBack(t *testing.T) {
+	devs, active, err := resolveNvidiaDevices(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100: {}
+`, map[string]string{"hami.io/mock-group": "gpu-a100"})
+	if err != nil {
+		t.Fatalf("ResolveNvidiaDevices() error = %v", err)
+	}
+	if active {
+		t.Fatalf("expected fallback path for group without nvidia devices")
+	}
+	if len(devs) != 0 {
+		t.Fatalf("expected 0 devices on fallback, got %d", len(devs))
+	}
+}
+
+func TestResolveNvidiaDevicesIgnoresInvalidUnmatchedGroup(t *testing.T) {
+	devs, active, err := resolveNvidiaDevices(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+`, map[string]string{"hami.io/mock-group": "gpu-h100"})
+	if err != nil {
+		t.Fatalf("expected unmatched invalid group not to error, got %v", err)
+	}
+	if active {
+		t.Fatalf("expected fallback path for unmatched group")
+	}
+	if len(devs) != 0 {
+		t.Fatalf("expected 0 devices on fallback, got %d", len(devs))
+	}
+}
+
 func TestResolveNvidiaDevicesClonesReturnedEntries(t *testing.T) {
-	path := writeInventoryFile(t, `
+	inv := loadInventory(t, `
 apiVersion: mock.hami.io/v1alpha1
 kind: MockInventory
 groupBy:
@@ -126,11 +171,6 @@ groups:
         count: 10
         health: true
 `)
-
-	inv, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
 
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -156,7 +196,7 @@ groups:
 }
 
 func TestLoadRejectsMissingLabelKey(t *testing.T) {
-	path := writeInventoryFile(t, `
+	_, err := Load(writeInventoryFile(t, `
 apiVersion: mock.hami.io/v1alpha1
 kind: MockInventory
 groupBy: {}
@@ -170,16 +210,69 @@ groups:
         devcore: 100
         count: 10
         health: true
-`)
-
-	_, err := Load(path)
+`))
 	if err == nil {
 		t.Fatalf("expected missing labelKey error")
 	}
 }
 
-func TestLoadRejectsDuplicateDeviceIDs(t *testing.T) {
-	path := writeInventoryFile(t, `
+func TestResolveNvidiaDevicesRejectsMissingRequiredField(t *testing.T) {
+	_, active, err := resolveNvidiaDevices(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+`, map[string]string{"hami.io/mock-group": "gpu-a100"})
+	if err == nil {
+		t.Fatalf("expected missing required field error")
+	}
+	if !active {
+		t.Fatalf("expected matched invalid group to stay on fail-fast path")
+	}
+	if !strings.Contains(err.Error(), "groups.gpu-a100.nvidia[0].index is required") {
+		t.Fatalf("expected index-required error, got %v", err)
+	}
+}
+
+func TestResolveNvidiaDevicesRejectsMisspelledRequiredField(t *testing.T) {
+	_, active, err := resolveNvidiaDevices(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        index: 0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcor: 100
+        count: 10
+        health: true
+`, map[string]string{"hami.io/mock-group": "gpu-a100"})
+	if err == nil {
+		t.Fatalf("expected strict decode error for misspelled field")
+	}
+	if !active {
+		t.Fatalf("expected matched invalid group to stay on fail-fast path")
+	}
+	if !strings.Contains(err.Error(), "groups.gpu-a100") {
+		t.Fatalf("expected group-qualified error, got %v", err)
+	}
+}
+
+func TestResolveNvidiaDevicesRejectsDuplicateDeviceIDs(t *testing.T) {
+	_, _, err := resolveNvidiaDevices(t, `
 apiVersion: mock.hami.io/v1alpha1
 kind: MockInventory
 groupBy:
@@ -201,16 +294,14 @@ groups:
         devcore: 100
         count: 10
         health: true
-`)
-
-	_, err := Load(path)
+`, map[string]string{"hami.io/mock-group": "gpu-a100"})
 	if err == nil {
 		t.Fatalf("expected duplicate id error")
 	}
 }
 
-func TestLoadRejectsDuplicateIndexes(t *testing.T) {
-	path := writeInventoryFile(t, `
+func TestResolveNvidiaDevicesRejectsDuplicateIndexes(t *testing.T) {
+	_, _, err := resolveNvidiaDevices(t, `
 apiVersion: mock.hami.io/v1alpha1
 kind: MockInventory
 groupBy:
@@ -232,16 +323,14 @@ groups:
         devcore: 100
         count: 10
         health: true
-`)
-
-	_, err := Load(path)
+`, map[string]string{"hami.io/mock-group": "gpu-a100"})
 	if err == nil {
 		t.Fatalf("expected duplicate index error")
 	}
 }
 
-func TestLoadRejectsNegativeNumericFields(t *testing.T) {
-	path := writeInventoryFile(t, `
+func TestResolveNvidiaDevicesRejectsNegativeNumericFields(t *testing.T) {
+	_, _, err := resolveNvidiaDevices(t, `
 apiVersion: mock.hami.io/v1alpha1
 kind: MockInventory
 groupBy:
@@ -256,16 +345,14 @@ groups:
         devcore: 100
         count: 10
         health: true
-`)
-
-	_, err := Load(path)
+`, map[string]string{"hami.io/mock-group": "gpu-a100"})
 	if err == nil {
 		t.Fatalf("expected negative numeric field error")
 	}
 }
 
-func TestLoadRejectsEmptyDeviceID(t *testing.T) {
-	path := writeInventoryFile(t, `
+func TestResolveNvidiaDevicesRejectsEmptyDeviceID(t *testing.T) {
+	_, _, err := resolveNvidiaDevices(t, `
 apiVersion: mock.hami.io/v1alpha1
 kind: MockInventory
 groupBy:
@@ -280,16 +367,14 @@ groups:
         devcore: 100
         count: 10
         health: true
-`)
-
-	_, err := Load(path)
+`, map[string]string{"hami.io/mock-group": "gpu-a100"})
 	if err == nil {
 		t.Fatalf("expected empty id error")
 	}
 }
 
-func TestLoadRejectsEmptyDeviceType(t *testing.T) {
-	path := writeInventoryFile(t, `
+func TestResolveNvidiaDevicesRejectsEmptyDeviceType(t *testing.T) {
+	_, _, err := resolveNvidiaDevices(t, `
 apiVersion: mock.hami.io/v1alpha1
 kind: MockInventory
 groupBy:
@@ -304,12 +389,8 @@ groups:
         devcore: 100
         count: 10
         health: true
-`)
-
-	_, err := Load(path)
+`, map[string]string{"hami.io/mock-group": "gpu-a100"})
 	if err == nil {
 		t.Fatalf("expected empty type error")
 	}
 }
-
-var _ = device.DeviceInfo{}

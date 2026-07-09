@@ -154,10 +154,56 @@ kind: MockInventory
 groupBy:
   labelKey: hami.io/mock-group
 groups:
+  gpu-a100: {}
+`)
+
+	config := NvidiaConfig{
+		ResourceCountName:            "nvidia.com/gpu",
+		ResourceMemoryName:           "nvidia.com/gpu-memory",
+		ResourceCoreName:             "nvidia.com/gpu-core",
+		ResourceMemoryPercentageName: "nvidia.com/gpu-memory-percentage",
+	}
+	dev := InitNvidiaDevice(config, inventoryPath)
+
+	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "node-legacy",
+			Labels: map[string]string{
+				"hami.io/mock-group": "gpu-a100",
+			},
+			Annotations: map[string]string{
+				RegisterAnnos: `[{"id":"GPU-0","index":0,"count":10,"devmem":40960,"devcore":50,"type":"NVIDIA-Legacy","health":true}]`,
+			},
+		},
+		Status: corev1.NodeStatus{
+			Capacity: corev1.ResourceList{
+				corev1.ResourceName(config.ResourceCountName): resource.MustParse("1"),
+			},
+		},
+	}
+
+	got := dev.GetResource(&node)
+	if got["gpu-memory"] != 40960 {
+		t.Fatalf("expected annotation fallback memory 40960, got %d", got["gpu-memory"])
+	}
+	if got["gpu-core"] != 50 {
+		t.Fatalf("expected annotation fallback core 50, got %d", got["gpu-core"])
+	}
+	if got["gpu-memory-percentage"] != 100 {
+		t.Fatalf("expected annotation fallback memory percentage 100, got %d", got["gpu-memory-percentage"])
+	}
+}
+
+func TestGetResourceFallsBackWhenOtherInventoryGroupIsInvalid(t *testing.T) {
+	inventoryPath := writeInventoryFile(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
   gpu-a100:
     nvidia:
       - id: GPU-MOCK-0
-        index: 0
         type: NVIDIA-A100-SXM4-80GB
         devmem: 81920
         devcore: 100
@@ -176,6 +222,9 @@ groups:
 	node := corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "node-legacy",
+			Labels: map[string]string{
+				"hami.io/mock-group": "gpu-h100",
+			},
 			Annotations: map[string]string{
 				RegisterAnnos: `[{"id":"GPU-0","index":0,"count":10,"devmem":40960,"devcore":50,"type":"NVIDIA-Legacy","health":true}]`,
 			},
@@ -316,12 +365,12 @@ func TestGetNodeDevicesReturnsInventoryError(t *testing.T) {
 	inventoryPath := writeInventoryFile(t, `
 apiVersion: mock.hami.io/v1alpha1
 kind: MockInventory
-groupBy: {}
+groupBy:
+  labelKey: hami.io/mock-group
 groups:
   gpu-a100:
     nvidia:
       - id: GPU-MOCK-0
-        index: 0
         type: NVIDIA-A100-SXM4-80GB
         devmem: 81920
         devcore: 100

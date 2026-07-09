@@ -29,7 +29,7 @@ Today that means:
 
 - **NVIDIA primary path:** mount the optional `hami-mock-inventory` ConfigMap, label the node with `groupBy.labelKey`, and let the plugin read `groups.<group>.nvidia[]`.
 - **NVIDIA fallback path:** if the inventory file is missing, the node label is absent, or the label does not match a populated group, the plugin falls back to the legacy manual path.
-- **NVIDIA inventory errors:** malformed or otherwise unreadable inventory content is **not** a silent fallback case. The runtime surfaces the error, and `GetResource()` may fail fast until you fix the file or remove the inventory input.
+- **NVIDIA inventory errors:** if the current node matches a group and that group's NVIDIA inventory is malformed or unreadable, the runtime surfaces the error instead of silently falling back.
 - **Ascend / Hygon:** these vendors still use the legacy manual path today.
 
 On a **real** cluster, the legacy annotation and count resource are normally produced by the real device plugin. In a **mock-only** (no hardware) environment you provide them yourself when using the fallback/manual path:
@@ -77,7 +77,7 @@ Device entry fields:
 | `count` | per-card split count (informational for the mock) |
 | `type` | device model string |
 | `health` | must be `true` to be counted |
-| `index` | card index `0,1,2,...` (`0` may be omitted) |
+| `index` | card index `0,1,2,...`; required for inventory-backed entries, optional on the legacy/manual annotation path (defaults to `0` if omitted) |
 | `numa`, `mode` | optional |
 
 > **Worked example (Ascend, below):** the annotation has **2 entries**, each `devmem=32768`. So `...-memory = 2x32768 = 65536` and `...-core = 2x100 = 200` (Ascend `...-core` is **percentage-based**: a whole card is always **100**). The count resource `=8` is a separate health-gate value and is unrelated to these numbers.
@@ -129,7 +129,7 @@ kubectl get node <node> -o json | jq '.status.allocatable|with_entries(select(.k
 
 If the ConfigMap/file is missing, the node label is absent, or the label does not match a populated group, the plugin falls back to the legacy annotation path below.
 
-If the inventory file exists but is malformed or otherwise unreadable, that is not a silent fallback case. Fix the file contents or remove the inventory input so the plugin can resume normal operation.
+If the current node matches a group whose NVIDIA inventory is malformed or otherwise unreadable, that is not a silent fallback case. Fix that matched group or remove the inventory input so the plugin can resume normal operation.
 
 #### Legacy fallback: manual annotation
 
