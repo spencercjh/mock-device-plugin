@@ -71,6 +71,12 @@ func (inv *Inventory) Validate() error {
 			if gpu == nil {
 				return fmt.Errorf("groups.%s.nvidia contains nil entry", groupName)
 			}
+			if gpu.ID == "" {
+				return fmt.Errorf("groups.%s.nvidia contains empty id", groupName)
+			}
+			if gpu.Type == "" {
+				return fmt.Errorf("groups.%s.nvidia contains empty type", groupName)
+			}
 			if _, ok := seenIDs[gpu.ID]; ok {
 				return fmt.Errorf("groups.%s.nvidia contains duplicate id %q", groupName, gpu.ID)
 			}

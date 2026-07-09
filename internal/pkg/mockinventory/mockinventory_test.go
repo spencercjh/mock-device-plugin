@@ -264,4 +264,52 @@ groups:
 	}
 }
 
+func TestLoadRejectsEmptyDeviceID(t *testing.T) {
+	path := writeInventoryFile(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100:
+    nvidia:
+      - id: ""
+        index: 0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatalf("expected empty id error")
+	}
+}
+
+func TestLoadRejectsEmptyDeviceType(t *testing.T) {
+	path := writeInventoryFile(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        index: 0
+        type: ""
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatalf("expected empty type error")
+	}
+}
+
 var _ = device.DeviceInfo{}
