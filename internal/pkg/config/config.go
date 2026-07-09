@@ -52,7 +52,8 @@ type Config struct {
 }
 
 var (
-	configFile string
+	configFile        string
+	mockInventoryFile string
 )
 
 func LoadConfig(path string) (*Config, error) {
@@ -125,6 +126,11 @@ func InitDevices() {
 	}
 }
 
+func RegisterFlags(fs *flag.FlagSet) {
+	fs.StringVar(&configFile, "device-config-file", "", "Path to the device config file")
+	fs.StringVar(&mockInventoryFile, "mock-inventory-file", "", "Path to the mock inventory file")
+}
+
 func GlobalFlagSet() {
-	flag.StringVar(&configFile, "device-config-file", "", "Path to the device config file")
+	RegisterFlags(flag.CommandLine)
 }
