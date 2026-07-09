@@ -18,10 +18,12 @@ package nvidia
 
 import (
 	"errors"
+	"os"
 	"strings"
 
 	"github.com/HAMi/mock-device-plugin/internal/pkg/api/device"
 	"github.com/HAMi/mock-device-plugin/internal/pkg/mock"
+	"github.com/HAMi/mock-device-plugin/internal/pkg/mockinventory"
 	"github.com/kubevirt/device-plugin-manager/pkg/dpm"
 
 	corev1 "k8s.io/api/core/v1"
@@ -77,15 +79,17 @@ type NodeDefaultConfig struct {
 }
 
 type NvidiaGPUDevices struct {
-	config         NvidiaConfig
-	ReportedGPUNum int64
+	config            NvidiaConfig
+	mockInventoryFile string
+	ReportedGPUNum    int64
 }
 
-func InitNvidiaDevice(nvconfig NvidiaConfig) *NvidiaGPUDevices {
+func InitNvidiaDevice(nvconfig NvidiaConfig, mockInventoryFile string) *NvidiaGPUDevices {
 	klog.InfoS("initializing nvidia device", "resourceName", nvconfig.ResourceCountName, "resourceMem", nvconfig.ResourceMemoryName, "DefaultGPUNum", nvconfig.DefaultGPUNum)
 	return &NvidiaGPUDevices{
-		config:         nvconfig,
-		ReportedGPUNum: 0,
+		config:            nvconfig,
+		mockInventoryFile: mockInventoryFile,
+		ReportedGPUNum:    0,
 	}
 }
 
@@ -93,22 +97,9 @@ func (dev *NvidiaGPUDevices) CommonWord() string {
 	return NvidiaGPUDevice
 }
 
-func (dev *NvidiaGPUDevices) GetNodeDevices(n *corev1.Node) ([]*device.DeviceInfo, error) {
-	devEncoded, ok := n.Annotations[RegisterAnnos]
-	if !ok {
-		return []*device.DeviceInfo{}, errors.New("annos not found " + RegisterAnnos)
-	}
-	nodedevices, err := device.UnMarshalNodeDevices(devEncoded)
-	if err != nil {
-		klog.Infof("decode error. try to decode with old method. error %s", err.Error())
-		nodedevices, err = device.DecodeNodeDevices(devEncoded)
-		if err != nil {
-			klog.ErrorS(err, "failed to decode node devices", "node", n.Name, "device annotation", devEncoded)
-			return []*device.DeviceInfo{}, err
-		}
-	}
+func (dev *NvidiaGPUDevices) decorateDevices(n *corev1.Node, nodedevices []*device.DeviceInfo) ([]*device.DeviceInfo, error) {
 	if len(nodedevices) == 0 {
-		klog.InfoS("no nvidia gpu device found", "node", n.Name, "device annotation", devEncoded)
+		klog.InfoS("no nvidia gpu device found", "node", n.Name)
 		return []*device.DeviceInfo{}, errors.New("no gpu found on node")
 	}
 	for idx := range nodedevices {
@@ -161,24 +152,76 @@ func (dev *NvidiaGPUDevices) GetNodeDevices(n *corev1.Node) ([]*device.DeviceInf
 	return nodedevices, nil
 }
 
-func (dev *NvidiaGPUDevices) GetResource(n *corev1.Node) map[string]int {
+func (dev *NvidiaGPUDevices) getAnnotationDevices(n *corev1.Node) ([]*device.DeviceInfo, error) {
+	devEncoded, ok := n.Annotations[RegisterAnnos]
+	if !ok {
+		return []*device.DeviceInfo{}, errors.New("annos not found " + RegisterAnnos)
+	}
+	nodedevices, err := device.UnMarshalNodeDevices(devEncoded)
+	if err != nil {
+		klog.Infof("decode error. try to decode with old method. error %s", err.Error())
+		nodedevices, err = device.DecodeNodeDevices(devEncoded)
+		if err != nil {
+			klog.ErrorS(err, "failed to decode node devices", "node", n.Name, "device annotation", devEncoded)
+			return []*device.DeviceInfo{}, err
+		}
+	}
+
+	return dev.decorateDevices(n, nodedevices)
+}
+
+func (dev *NvidiaGPUDevices) getInventoryDevices(n *corev1.Node) ([]*device.DeviceInfo, bool, error) {
+	if dev.mockInventoryFile == "" {
+		return nil, false, nil
+	}
+
+	inv, err := mockinventory.Load(dev.mockInventoryFile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+
+	nodedevices, active, err := inv.ResolveNvidiaDevices(n)
+	if err != nil || !active {
+		return nil, active, err
+	}
+
+	decorated, err := dev.decorateDevices(n, nodedevices)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return decorated, true, nil
+}
+
+func (dev *NvidiaGPUDevices) GetNodeDevices(n *corev1.Node) ([]*device.DeviceInfo, error) {
+	nodedevices, active, err := dev.getInventoryDevices(n)
+	if err != nil {
+		return []*device.DeviceInfo{}, err
+	}
+	if active {
+		return nodedevices, nil
+	}
+
+	return dev.getAnnotationDevices(n)
+}
+
+func (dev *NvidiaGPUDevices) emptyResourceMap() map[string]int {
+	return map[string]int{
+		device.GetResourceName(dev.config.ResourceMemoryName):           0,
+		device.GetResourceName(dev.config.ResourceCoreName):             0,
+		device.GetResourceName(dev.config.ResourceMemoryPercentageName): 0,
+	}
+}
+
+func (dev *NvidiaGPUDevices) sumResources(devs []*device.DeviceInfo) map[string]int {
+	resourceMap := dev.emptyResourceMap()
 	memoryResourceName := device.GetResourceName(dev.config.ResourceMemoryName)
 	coreResourceName := device.GetResourceName(dev.config.ResourceCoreName)
 	memoryPercentageName := device.GetResourceName(dev.config.ResourceMemoryPercentageName)
-	resourceMap := map[string]int{
-		memoryResourceName:   0,
-		coreResourceName:     0,
-		memoryPercentageName: 0,
-	}
-	if !device.CheckHealthy(n, dev.config.ResourceCountName) {
-		klog.Infof("device %s is unhealthy on this node", dev.CommonWord())
-		return resourceMap
-	}
-	devs, err := dev.GetNodeDevices(n)
-	if err != nil {
-		klog.Infof("no device %s on this node", NvidiaGPUCommonWord)
-		return resourceMap
-	}
+
 	for _, val := range devs {
 		resourceMap[memoryResourceName] += int(val.Devmem)
 		resourceMap[coreResourceName] += int(val.Devcore)
@@ -197,7 +240,32 @@ func (dev *NvidiaGPUDevices) GetResource(n *corev1.Node) map[string]int {
 		memoryPercentageName,
 		resourceMap[memoryPercentageName],
 	)
+
 	return resourceMap
+}
+
+func (dev *NvidiaGPUDevices) GetResource(n *corev1.Node) map[string]int {
+	resourceMap := dev.emptyResourceMap()
+
+	devs, active, err := dev.getInventoryDevices(n)
+	if err != nil {
+		klog.Fatalf("failed to load mock inventory for node %s: %v", n.Name, err)
+	}
+	if active {
+		return dev.sumResources(devs)
+	}
+
+	if !device.CheckHealthy(n, dev.config.ResourceCountName) {
+		klog.Infof("device %s is unhealthy on this node", dev.CommonWord())
+		return resourceMap
+	}
+	devs, err = dev.getAnnotationDevices(n)
+	if err != nil {
+		klog.Infof("no device %s on this node", NvidiaGPUCommonWord)
+		return resourceMap
+	}
+
+	return dev.sumResources(devs)
 }
 
 func (dev *NvidiaGPUDevices) RunManager() {

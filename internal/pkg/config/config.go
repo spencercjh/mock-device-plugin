@@ -102,7 +102,7 @@ func InitDevicesWithConfig(config *Config) error {
 	if hygonDevice != nil {
 		device.DevicesMap[hygonDevice.CommonWord()] = hygonDevice
 	}
-	nvidiaDevice := nvidia.InitNvidiaDevice(config.NvidiaConfig)
+	nvidiaDevice := nvidia.InitNvidiaDevice(config.NvidiaConfig, mockInventoryFile)
 	if nvidiaDevice != nil {
 		device.DevicesMap[nvidiaDevice.CommonWord()] = nvidiaDevice
 	}

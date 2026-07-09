@@ -16,12 +16,26 @@ limitations under the License.
 package nvidia
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+func writeInventoryFile(t *testing.T, body string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mock-inventory.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write inventory: %v", err)
+	}
+
+	return path
+}
 
 func TestGetResource(t *testing.T) {
 
@@ -39,7 +53,7 @@ func TestGetResource(t *testing.T) {
 		DisableCoreLimit:             false,
 	}
 
-	dev := InitNvidiaDevice(config)
+	dev := InitNvidiaDevice(config, "")
 
 	// 根据提供的 annotation 创建测试节点
 	node := corev1.Node{
@@ -86,6 +100,103 @@ func TestGetResource(t *testing.T) {
 		}
 
 	})
+}
+
+func TestGetResourceUsesInventoryWithoutHealthGate(t *testing.T) {
+	inventoryPath := writeInventoryFile(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        index: 0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+`)
+
+	config := NvidiaConfig{
+		ResourceCountName:            "nvidia.com/gpu",
+		ResourceMemoryName:           "nvidia.com/gpu-memory",
+		ResourceCoreName:             "nvidia.com/gpu-core",
+		ResourceMemoryPercentageName: "nvidia.com/gpu-memory-percentage",
+	}
+	dev := InitNvidiaDevice(config, inventoryPath)
+
+	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-a100-0",
+			Labels: map[string]string{"hami.io/mock-group": "gpu-a100"},
+		},
+	}
+
+	got := dev.GetResource(&node)
+	if got["gpu-memory"] != 81920 {
+		t.Fatalf("expected file-backed memory 81920, got %d", got["gpu-memory"])
+	}
+	if got["gpu-core"] != 100 {
+		t.Fatalf("expected file-backed core 100, got %d", got["gpu-core"])
+	}
+	if got["gpu-memory-percentage"] != 100 {
+		t.Fatalf("expected file-backed memory percentage 100, got %d", got["gpu-memory-percentage"])
+	}
+}
+
+func TestGetResourceFallsBackToAnnotationWhenInventoryInactive(t *testing.T) {
+	inventoryPath := writeInventoryFile(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        index: 0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+`)
+
+	config := NvidiaConfig{
+		ResourceCountName:            "nvidia.com/gpu",
+		ResourceMemoryName:           "nvidia.com/gpu-memory",
+		ResourceCoreName:             "nvidia.com/gpu-core",
+		ResourceMemoryPercentageName: "nvidia.com/gpu-memory-percentage",
+	}
+	dev := InitNvidiaDevice(config, inventoryPath)
+
+	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "node-legacy",
+			Annotations: map[string]string{
+				RegisterAnnos: `[{"id":"GPU-0","index":0,"count":10,"devmem":40960,"devcore":50,"type":"NVIDIA-Legacy","health":true}]`,
+			},
+		},
+		Status: corev1.NodeStatus{
+			Capacity: corev1.ResourceList{
+				corev1.ResourceName(config.ResourceCountName): resource.MustParse("1"),
+			},
+		},
+	}
+
+	got := dev.GetResource(&node)
+	if got["gpu-memory"] != 40960 {
+		t.Fatalf("expected annotation fallback memory 40960, got %d", got["gpu-memory"])
+	}
+	if got["gpu-core"] != 50 {
+		t.Fatalf("expected annotation fallback core 50, got %d", got["gpu-core"])
+	}
+	if got["gpu-memory-percentage"] != 100 {
+		t.Fatalf("expected annotation fallback memory percentage 100, got %d", got["gpu-memory-percentage"])
+	}
 }
 
 func TestGetNodeDevices(t *testing.T) {
@@ -198,5 +309,39 @@ func TestGetNodeDevices(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGetNodeDevicesReturnsInventoryError(t *testing.T) {
+	inventoryPath := writeInventoryFile(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy: {}
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        index: 0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+`)
+
+	dev := InitNvidiaDevice(NvidiaConfig{}, inventoryPath)
+	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-a100-0",
+			Labels: map[string]string{"hami.io/mock-group": "gpu-a100"},
+			Annotations: map[string]string{
+				RegisterAnnos: `[{"id":"GPU-0","index":0,"count":10,"devmem":40960,"devcore":50,"type":"NVIDIA-Legacy","health":true}]`,
+			},
+		},
+	}
+
+	_, err := dev.GetNodeDevices(&node)
+	if err == nil {
+		t.Fatalf("expected invalid inventory to return an error")
 	}
 }
