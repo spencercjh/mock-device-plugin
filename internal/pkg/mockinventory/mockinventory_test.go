@@ -155,4 +155,113 @@ groups:
 	}
 }
 
+func TestLoadRejectsMissingLabelKey(t *testing.T) {
+	path := writeInventoryFile(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy: {}
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        index: 0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatalf("expected missing labelKey error")
+	}
+}
+
+func TestLoadRejectsDuplicateDeviceIDs(t *testing.T) {
+	path := writeInventoryFile(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        index: 0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+      - id: GPU-MOCK-0
+        index: 1
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatalf("expected duplicate id error")
+	}
+}
+
+func TestLoadRejectsDuplicateIndexes(t *testing.T) {
+	path := writeInventoryFile(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        index: 0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+      - id: GPU-MOCK-1
+        index: 0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatalf("expected duplicate index error")
+	}
+}
+
+func TestLoadRejectsNegativeNumericFields(t *testing.T) {
+	path := writeInventoryFile(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        index: 0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: -1
+        devcore: 100
+        count: 10
+        health: true
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatalf("expected negative numeric field error")
+	}
+}
+
 var _ = device.DeviceInfo{}

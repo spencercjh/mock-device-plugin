@@ -63,6 +63,29 @@ func (inv *Inventory) Validate() error {
 		return fmt.Errorf("groupBy.labelKey is required")
 	}
 
+	for groupName, group := range inv.Groups {
+		seenIDs := make(map[string]struct{}, len(group.Nvidia))
+		seenIndexes := make(map[uint]struct{}, len(group.Nvidia))
+
+		for _, gpu := range group.Nvidia {
+			if gpu == nil {
+				return fmt.Errorf("groups.%s.nvidia contains nil entry", groupName)
+			}
+			if _, ok := seenIDs[gpu.ID]; ok {
+				return fmt.Errorf("groups.%s.nvidia contains duplicate id %q", groupName, gpu.ID)
+			}
+			if _, ok := seenIndexes[gpu.Index]; ok {
+				return fmt.Errorf("groups.%s.nvidia contains duplicate index %d", groupName, gpu.Index)
+			}
+			if gpu.Count < 0 || gpu.Devmem < 0 || gpu.Devcore < 0 || gpu.Numa < 0 {
+				return fmt.Errorf("groups.%s.nvidia contains negative numeric value", groupName)
+			}
+
+			seenIDs[gpu.ID] = struct{}{}
+			seenIndexes[gpu.Index] = struct{}{}
+		}
+	}
+
 	return nil
 }
 
