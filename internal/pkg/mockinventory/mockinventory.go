@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"strings"
 
 	"github.com/HAMi/mock-device-plugin/internal/pkg/api/device"
 	"gopkg.in/yaml.v2"
@@ -38,23 +39,7 @@ type GroupBy struct {
 }
 
 type Group struct {
-	Nvidia []*inventoryDevice `yaml:"nvidia"`
-}
-
-type inventoryDevice struct {
-	ID              *string                 `yaml:"id"`
-	Index           *uint                   `yaml:"index"`
-	Count           *int32                  `yaml:"count"`
-	Devmem          *int32                  `yaml:"devmem"`
-	Devcore         *int32                  `yaml:"devcore"`
-	Type            *string                 `yaml:"type"`
-	Numa            *int                    `yaml:"numa"`
-	Mode            *string                 `yaml:"mode"`
-	MIGTemplate     []device.Geometry       `yaml:"migtemplate"`
-	Health          *bool                   `yaml:"health"`
-	DeviceVendor    *string                 `yaml:"devicevendor"`
-	CustomInfo      map[string]any          `yaml:"custominfo"`
-	DevicePairScore *device.DevicePairScore `yaml:"devicepairscore"`
+	Nvidia []*device.DeviceInfo `yaml:"nvidia"`
 }
 
 func Load(path string) (*Inventory, error) {
@@ -104,12 +89,12 @@ func (inv *Inventory) ResolveNvidiaDevices(node *corev1.Node) ([]*device.DeviceI
 		return nil, false, nil
 	}
 
-	devs, err := group.nvidiaDevices(groupName)
+	devs, err := group.nvidiaDevices(groupName, groupData)
 	if err != nil {
 		return nil, true, err
 	}
 
-	return cloneDevices(devs), true, nil
+	return devs, true, nil
 }
 
 func decodeGroup(groupName string, data any) (*Group, error) {
@@ -126,15 +111,31 @@ func decodeGroup(groupName string, data any) (*Group, error) {
 	return &group, nil
 }
 
-func (g *Group) nvidiaDevices(groupName string) ([]*device.DeviceInfo, error) {
+func (g *Group) nvidiaDevices(groupName string, data any) ([]*device.DeviceInfo, error) {
+	rawDevices, err := decodeRawNvidiaDevices(groupName, data)
+	if err != nil {
+		return nil, err
+	}
+	if len(rawDevices) != len(g.Nvidia) {
+		return nil, fmt.Errorf("groups.%s.nvidia decode mismatch", groupName)
+	}
+
 	seenIDs := make(map[string]struct{}, len(g.Nvidia))
 	seenIndexes := make(map[uint]struct{}, len(g.Nvidia))
 	devs := make([]*device.DeviceInfo, 0, len(g.Nvidia))
 
-	for idx, gpu := range g.Nvidia {
-		devInfo, err := gpu.toDeviceInfo(groupName, idx)
-		if err != nil {
+	for idx, devInfo := range g.Nvidia {
+		if devInfo == nil {
+			return nil, fmt.Errorf("groups.%s.nvidia[%d] is nil", groupName, idx)
+		}
+		if err := validateRequiredFields(groupName, idx, rawDevices[idx], "id", "index", "count", "devmem", "devcore", "type", "health"); err != nil {
 			return nil, err
+		}
+		if strings.TrimSpace(devInfo.ID) == "" {
+			return nil, fmt.Errorf("groups.%s.nvidia[%d].id is required", groupName, idx)
+		}
+		if strings.TrimSpace(devInfo.Type) == "" {
+			return nil, fmt.Errorf("groups.%s.nvidia[%d].type is required", groupName, idx)
 		}
 		if _, ok := seenIDs[devInfo.ID]; ok {
 			return nil, fmt.Errorf("groups.%s.nvidia[%d].id %q is duplicated", groupName, idx, devInfo.ID)
@@ -151,87 +152,36 @@ func (g *Group) nvidiaDevices(groupName string) ([]*device.DeviceInfo, error) {
 		devs = append(devs, devInfo)
 	}
 
-	return devs, nil
+	return cloneDevices(devs), nil
 }
 
-func (d *inventoryDevice) toDeviceInfo(groupName string, index int) (*device.DeviceInfo, error) {
-	if d == nil {
-		return nil, fmt.Errorf("groups.%s.nvidia[%d] is nil", groupName, index)
+func decodeRawNvidiaDevices(groupName string, data any) ([]map[string]any, error) {
+	groupYAML, err := yaml.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("marshal raw groups.%s: %w", groupName, err)
 	}
 
-	id, err := requiredString(groupName, index, "id", d.ID)
-	if err != nil {
-		return nil, err
+	var raw struct {
+		Nvidia []map[string]any `yaml:"nvidia"`
 	}
-	deviceType, err := requiredString(groupName, index, "type", d.Type)
-	if err != nil {
-		return nil, err
-	}
-	deviceIndex, err := requiredValue(groupName, index, "index", d.Index)
-	if err != nil {
-		return nil, err
-	}
-	count, err := requiredValue(groupName, index, "count", d.Count)
-	if err != nil {
-		return nil, err
-	}
-	devmem, err := requiredValue(groupName, index, "devmem", d.Devmem)
-	if err != nil {
-		return nil, err
-	}
-	devcore, err := requiredValue(groupName, index, "devcore", d.Devcore)
-	if err != nil {
-		return nil, err
-	}
-	health, err := requiredValue(groupName, index, "health", d.Health)
-	if err != nil {
-		return nil, err
+	if err := yaml.Unmarshal(groupYAML, &raw); err != nil {
+		return nil, fmt.Errorf("decode raw groups.%s: %w", groupName, err)
 	}
 
-	devInfo := &device.DeviceInfo{
-		ID:          id,
-		Index:       deviceIndex,
-		Count:       count,
-		Devmem:      devmem,
-		Devcore:     devcore,
-		Type:        deviceType,
-		Health:      health,
-		MIGTemplate: cloneMigTemplate(d.MIGTemplate),
-		CustomInfo:  maps.Clone(d.CustomInfo),
-	}
-	if d.Numa != nil {
-		devInfo.Numa = *d.Numa
-	}
-	if d.Mode != nil {
-		devInfo.Mode = *d.Mode
-	}
-	if d.DeviceVendor != nil {
-		devInfo.DeviceVendor = *d.DeviceVendor
-	}
-	if d.DevicePairScore != nil {
-		devInfo.DevicePairScore = cloneDevicePairScore(*d.DevicePairScore)
-	}
-
-	return devInfo, nil
+	return raw.Nvidia, nil
 }
 
-func requiredString(groupName string, index int, field string, value *string) (string, error) {
-	result, err := requiredValue(groupName, index, field, value)
-	if err != nil {
-		return "", err
+func validateRequiredFields(groupName string, index int, raw map[string]any, fields ...string) error {
+	if raw == nil {
+		return fmt.Errorf("groups.%s.nvidia[%d] is nil", groupName, index)
 	}
-	if result == "" {
-		return "", fmt.Errorf("groups.%s.nvidia[%d].%s is required", groupName, index, field)
+	for _, field := range fields {
+		value, ok := raw[field]
+		if !ok || value == nil {
+			return fmt.Errorf("groups.%s.nvidia[%d].%s is required", groupName, index, field)
+		}
 	}
-	return result, nil
-}
-
-func requiredValue[T any](groupName string, index int, field string, value *T) (T, error) {
-	var zero T
-	if value == nil {
-		return zero, fmt.Errorf("groups.%s.nvidia[%d].%s is required", groupName, index, field)
-	}
-	return *value, nil
+	return nil
 }
 
 func cloneDevices(in []*device.DeviceInfo) []*device.DeviceInfo {
