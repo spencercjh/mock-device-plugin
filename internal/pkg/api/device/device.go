@@ -146,6 +146,45 @@ func UnMarshalNodeDevices(str string) ([]*DeviceInfo, error) {
 	return dlist, err
 }
 
+// MarshalNodeDevices normalizes the scheduler-facing node-register annotation to
+// the general device fields HAMi already consumes from JSON.
+func MarshalNodeDevices(dlist []*DeviceInfo) string {
+	type nodeDeviceAnnotation struct {
+		ID      string `json:"id,omitempty"`
+		Index   uint   `json:"index,omitempty"`
+		Count   int32  `json:"count,omitempty"`
+		Devmem  int32  `json:"devmem,omitempty"`
+		Devcore int32  `json:"devcore,omitempty"`
+		Type    string `json:"type,omitempty"`
+		Numa    int    `json:"numa,omitempty"`
+		Mode    string `json:"mode,omitempty"`
+		Health  bool   `json:"health,omitempty"`
+	}
+
+	devAnnos := make([]*nodeDeviceAnnotation, 0, len(dlist))
+	for _, val := range dlist {
+		if val == nil {
+			continue
+		}
+		devAnnos = append(devAnnos, &nodeDeviceAnnotation{
+			ID:      val.ID,
+			Count:   val.Count,
+			Devmem:  val.Devmem,
+			Devcore: val.Devcore,
+			Type:    val.Type,
+			Numa:    val.Numa,
+			Health:  val.Health,
+			Index:   val.Index,
+			Mode:    val.Mode,
+		})
+	}
+	data, err := json.Marshal(devAnnos)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
 func DecodeNodeDevices(str string) ([]*DeviceInfo, error) {
 	if !strings.Contains(str, OneContainerMultiDeviceSplitSymbol) {
 		return []*DeviceInfo{}, errors.New("node annotations not decode successfully")

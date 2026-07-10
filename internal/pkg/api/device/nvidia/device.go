@@ -17,6 +17,7 @@ limitations under the License.
 package nvidia
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -24,9 +25,11 @@ import (
 	"github.com/HAMi/mock-device-plugin/internal/pkg/api/device"
 	"github.com/HAMi/mock-device-plugin/internal/pkg/mock"
 	"github.com/HAMi/mock-device-plugin/internal/pkg/mockinventory"
+	"github.com/HAMi/mock-device-plugin/internal/pkg/util/client"
 	"github.com/kubevirt/device-plugin-manager/pkg/dpm"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 )
 
@@ -106,6 +109,16 @@ type NvidiaGPUDevices struct {
 	config            NvidiaConfig
 	mockInventoryFile string
 	ReportedGPUNum    int64
+}
+
+var updateNodeRegisterAnnotation = func(ctx context.Context, node *corev1.Node, annotation string) error {
+	updated := node.DeepCopy()
+	if updated.Annotations == nil {
+		updated.Annotations = map[string]string{}
+	}
+	updated.Annotations[RegisterAnnos] = annotation
+	_, err := client.GetClient().CoreV1().Nodes().Update(ctx, updated, metav1.UpdateOptions{})
+	return err
 }
 
 func InitNvidiaDevice(nvconfig NvidiaConfig, mockInventoryFile string) *NvidiaGPUDevices {
@@ -271,6 +284,30 @@ func (dev *NvidiaGPUDevices) sumResources(devs []*device.DeviceInfo) map[string]
 	return resourceMap
 }
 
+func (dev *NvidiaGPUDevices) syncInventoryAnnotation(n *corev1.Node, devs []*device.DeviceInfo) error {
+	desired := device.MarshalNodeDevices(devs)
+	if desired == "" {
+		return errors.New("marshal inventory-backed devices for node annotation")
+	}
+
+	current := ""
+	if n.Annotations != nil {
+		current = n.Annotations[RegisterAnnos]
+	}
+	if current == desired {
+		return nil
+	}
+
+	if err := updateNodeRegisterAnnotation(context.Background(), n, desired); err != nil {
+		return err
+	}
+	if n.Annotations == nil {
+		n.Annotations = map[string]string{}
+	}
+	n.Annotations[RegisterAnnos] = desired
+	return nil
+}
+
 func (dev *NvidiaGPUDevices) GetResource(n *corev1.Node) map[string]int {
 	resourceMap := dev.emptyResourceMap()
 
@@ -284,6 +321,10 @@ func (dev *NvidiaGPUDevices) GetResource(n *corev1.Node) map[string]int {
 		return resourceMap
 	}
 	if active {
+		if err := dev.syncInventoryAnnotation(n, devs); err != nil {
+			klog.ErrorS(err, "failed to sync inventory-backed node register annotation", "node", n.Name, "annotation", RegisterAnnos)
+			return resourceMap
+		}
 		return dev.sumResources(devs)
 	}
 

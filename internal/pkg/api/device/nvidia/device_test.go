@@ -16,10 +16,14 @@ limitations under the License.
 package nvidia
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	apidevice "github.com/HAMi/mock-device-plugin/internal/pkg/api/device"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -132,6 +136,18 @@ groups:
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   "node-a100-0",
 			Labels: map[string]string{"hami.io/mock-group": "gpu-a100"},
+			Annotations: map[string]string{
+				RegisterAnnos: apidevice.MarshalNodeDevices([]*apidevice.DeviceInfo{
+					{
+						ID:      "GPU-MOCK-0",
+						Count:   10,
+						Devmem:  81920,
+						Devcore: 100,
+						Type:    "NVIDIA-A100-SXM4-80GB",
+						Health:  true,
+					},
+				}),
+			},
 		},
 	}
 
@@ -245,6 +261,214 @@ groups:
 	}
 	if got["gpu-memory-percentage"] != 100 {
 		t.Fatalf("expected annotation fallback memory percentage 100, got %d", got["gpu-memory-percentage"])
+	}
+}
+
+func TestGetResourceSyncsInventoryAnnotationWhenDifferent(t *testing.T) {
+	inventoryPath := writeInventoryFile(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        index: 0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+`)
+
+	config := NvidiaConfig{
+		ResourceCountName:            "nvidia.com/gpu",
+		ResourceMemoryName:           "nvidia.com/gpu-memory",
+		ResourceCoreName:             "nvidia.com/gpu-core",
+		ResourceMemoryPercentageName: "nvidia.com/gpu-memory-percentage",
+	}
+	dev := InitNvidiaDevice(config, inventoryPath)
+
+	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-a100-0",
+			Labels: map[string]string{"hami.io/mock-group": "gpu-a100"},
+			Annotations: map[string]string{
+				RegisterAnnos: `[{"id":"GPU-OLD-0","count":10,"devmem":40960,"devcore":50,"type":"NVIDIA-Old","health":true}]`,
+			},
+		},
+	}
+
+	originalUpdater := updateNodeRegisterAnnotation
+	t.Cleanup(func() {
+		updateNodeRegisterAnnotation = originalUpdater
+	})
+
+	var synced string
+	updateNodeRegisterAnnotation = func(ctx context.Context, gotNode *corev1.Node, annotation string) error {
+		if gotNode.Name != node.Name {
+			t.Fatalf("expected node %s, got %s", node.Name, gotNode.Name)
+		}
+		synced = annotation
+		return nil
+	}
+
+	got := dev.GetResource(&node)
+	if got["gpu-memory"] != 81920 {
+		t.Fatalf("expected inventory memory 81920, got %d", got["gpu-memory"])
+	}
+	if got["gpu-core"] != 100 {
+		t.Fatalf("expected inventory core 100, got %d", got["gpu-core"])
+	}
+	if got["gpu-memory-percentage"] != 100 {
+		t.Fatalf("expected inventory memory percentage 100, got %d", got["gpu-memory-percentage"])
+	}
+	if !strings.HasPrefix(synced, "[") {
+		t.Fatalf("expected synced annotation to be JSON, got %q", synced)
+	}
+	if strings.Contains(synced, "devicevendor") {
+		t.Fatalf("expected synced annotation to omit devicevendor, got %q", synced)
+	}
+	if strings.Contains(synced, "devicepairscore") {
+		t.Fatalf("expected synced annotation to omit devicepairscore, got %q", synced)
+	}
+	if node.Annotations[RegisterAnnos] != synced {
+		t.Fatalf("expected in-memory node annotation to be updated to %q, got %q", synced, node.Annotations[RegisterAnnos])
+	}
+
+	devices, err := apidevice.UnMarshalNodeDevices(synced)
+	if err != nil {
+		t.Fatalf("expected synced annotation to decode, got %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 synced device, got %d", len(devices))
+	}
+	if devices[0].ID != "GPU-MOCK-0" || devices[0].Devmem != 81920 || devices[0].Devcore != 100 {
+		t.Fatalf("expected inventory-backed device in synced annotation, got %+v", devices[0])
+	}
+}
+
+func TestGetResourceSkipsAnnotationSyncWhenAlreadyCurrent(t *testing.T) {
+	inventoryPath := writeInventoryFile(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        index: 0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+`)
+
+	config := NvidiaConfig{
+		ResourceCountName:            "nvidia.com/gpu",
+		ResourceMemoryName:           "nvidia.com/gpu-memory",
+		ResourceCoreName:             "nvidia.com/gpu-core",
+		ResourceMemoryPercentageName: "nvidia.com/gpu-memory-percentage",
+	}
+	dev := InitNvidiaDevice(config, inventoryPath)
+
+	currentAnnotation := apidevice.MarshalNodeDevices([]*apidevice.DeviceInfo{
+		{
+			ID:      "GPU-MOCK-0",
+			Count:   10,
+			Devmem:  81920,
+			Devcore: 100,
+			Type:    "NVIDIA-A100-SXM4-80GB",
+			Health:  true,
+		},
+	})
+	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-a100-0",
+			Labels: map[string]string{"hami.io/mock-group": "gpu-a100"},
+			Annotations: map[string]string{
+				RegisterAnnos: currentAnnotation,
+			},
+		},
+	}
+
+	originalUpdater := updateNodeRegisterAnnotation
+	t.Cleanup(func() {
+		updateNodeRegisterAnnotation = originalUpdater
+	})
+
+	called := false
+	updateNodeRegisterAnnotation = func(ctx context.Context, gotNode *corev1.Node, annotation string) error {
+		called = true
+		return nil
+	}
+
+	got := dev.GetResource(&node)
+	if got["gpu-memory"] != 81920 {
+		t.Fatalf("expected inventory memory 81920, got %d", got["gpu-memory"])
+	}
+	if called {
+		t.Fatalf("expected annotation updater to be skipped when annotation already matches inventory")
+	}
+}
+
+func TestGetResourceReturnsZeroWhenInventoryAnnotationSyncFails(t *testing.T) {
+	inventoryPath := writeInventoryFile(t, `
+apiVersion: mock.hami.io/v1alpha1
+kind: MockInventory
+groupBy:
+  labelKey: hami.io/mock-group
+groups:
+  gpu-a100:
+    nvidia:
+      - id: GPU-MOCK-0
+        index: 0
+        type: NVIDIA-A100-SXM4-80GB
+        devmem: 81920
+        devcore: 100
+        count: 10
+        health: true
+`)
+
+	config := NvidiaConfig{
+		ResourceCountName:            "nvidia.com/gpu",
+		ResourceMemoryName:           "nvidia.com/gpu-memory",
+		ResourceCoreName:             "nvidia.com/gpu-core",
+		ResourceMemoryPercentageName: "nvidia.com/gpu-memory-percentage",
+	}
+	dev := InitNvidiaDevice(config, inventoryPath)
+
+	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-a100-0",
+			Labels: map[string]string{"hami.io/mock-group": "gpu-a100"},
+		},
+	}
+
+	originalUpdater := updateNodeRegisterAnnotation
+	t.Cleanup(func() {
+		updateNodeRegisterAnnotation = originalUpdater
+	})
+
+	updateNodeRegisterAnnotation = func(ctx context.Context, gotNode *corev1.Node, annotation string) error {
+		return errors.New("update failed")
+	}
+
+	got := dev.GetResource(&node)
+	if got["gpu-memory"] != 0 {
+		t.Fatalf("expected sync failure to suppress inventory memory, got %d", got["gpu-memory"])
+	}
+	if got["gpu-core"] != 0 {
+		t.Fatalf("expected sync failure to suppress inventory core, got %d", got["gpu-core"])
+	}
+	if got["gpu-memory-percentage"] != 0 {
+		t.Fatalf("expected sync failure to suppress inventory memory percentage, got %d", got["gpu-memory-percentage"])
+	}
+	if _, ok := node.Annotations[RegisterAnnos]; ok {
+		t.Fatalf("expected failed sync to leave node annotation unset, got %q", node.Annotations[RegisterAnnos])
 	}
 }
 

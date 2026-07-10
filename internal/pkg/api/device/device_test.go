@@ -18,6 +18,7 @@ package device
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -100,4 +101,73 @@ func Test_DecodeNodeDevices(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMarshalNodeDevices(t *testing.T) {
+	input := []*DeviceInfo{
+		{
+			ID:           "GPU-0",
+			Index:        1,
+			Count:        10,
+			Devmem:       40960,
+			Devcore:      50,
+			Type:         "NVIDIA-Legacy",
+			Numa:         1,
+			Mode:         "hami-core",
+			Health:       true,
+			DeviceVendor: "NVIDIA",
+			CustomInfo: map[string]any{
+				"ignored": "value",
+			},
+			DevicePairScore: DevicePairScore{
+				ID: "GPU-0",
+				Scores: map[string]int{
+					"GPU-1": 100,
+				},
+			},
+			MIGTemplate: []Geometry{
+				{
+					{
+						Name:   "1g.10gb",
+						Memory: 10,
+						Count:  1,
+					},
+				},
+			},
+		},
+	}
+
+	marshaled := MarshalNodeDevices(input)
+	if strings.Contains(marshaled, "custominfo") {
+		t.Fatalf("expected custominfo to be omitted, got %s", marshaled)
+	}
+	if strings.Contains(marshaled, "devicevendor") {
+		t.Fatalf("expected devicevendor to be omitted, got %s", marshaled)
+	}
+	if strings.Contains(marshaled, "devicepairscore") {
+		t.Fatalf("expected devicepairscore to be omitted, got %s", marshaled)
+	}
+	if strings.Contains(marshaled, "migtemplate") {
+		t.Fatalf("expected migtemplate to be omitted, got %s", marshaled)
+	}
+
+	got, err := UnMarshalNodeDevices(marshaled)
+	if err != nil {
+		t.Fatalf("UnMarshalNodeDevices() error = %v", err)
+	}
+
+	expected := []*DeviceInfo{
+		{
+			ID:      "GPU-0",
+			Index:   1,
+			Count:   10,
+			Devmem:  40960,
+			Devcore: 50,
+			Type:    "NVIDIA-Legacy",
+			Numa:    1,
+			Mode:    "hami-core",
+			Health:  true,
+		},
+	}
+	assert.DeepEqual(t, expected, got)
 }
