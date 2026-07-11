@@ -21,6 +21,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/HAMi/mock-device-plugin/internal/pkg/api/device"
 	"github.com/HAMi/mock-device-plugin/internal/pkg/mock"
@@ -64,6 +65,7 @@ const (
 	NvidiaGPUCommonWord  = "GPU"
 	Vendor               = "nvidia.com"
 	MigMode              = "mig"
+	inventoryAnnotationSyncTimeout = 5 * time.Second
 )
 
 type LibCudaLogLevel string
@@ -298,7 +300,10 @@ func (dev *NvidiaGPUDevices) syncInventoryAnnotation(n *corev1.Node, devs []*dev
 		return nil
 	}
 
-	if err := updateNodeRegisterAnnotation(context.Background(), n, desired); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), inventoryAnnotationSyncTimeout)
+	defer cancel()
+
+	if err := updateNodeRegisterAnnotation(ctx, n, desired); err != nil {
 		return err
 	}
 	if n.Annotations == nil {

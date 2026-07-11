@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	apidevice "github.com/HAMi/mock-device-plugin/internal/pkg/api/device"
 	corev1 "k8s.io/api/core/v1"
@@ -309,6 +310,14 @@ groups:
 	updateNodeRegisterAnnotation = func(ctx context.Context, gotNode *corev1.Node, annotation string) error {
 		if gotNode.Name != node.Name {
 			t.Fatalf("expected node %s, got %s", node.Name, gotNode.Name)
+		}
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatalf("expected annotation sync context to have a deadline")
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining > inventoryAnnotationSyncTimeout {
+			t.Fatalf("expected bounded annotation sync timeout, got remaining=%s", remaining)
 		}
 		synced = annotation
 		return nil

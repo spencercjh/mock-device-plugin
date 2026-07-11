@@ -135,6 +135,17 @@ func TestMarshalNodeDevices(t *testing.T) {
 				},
 			},
 		},
+		{
+			ID:      "GPU-1",
+			Index:   0,
+			Count:   1,
+			Devmem:  1024,
+			Devcore: 0,
+			Type:    "NVIDIA-Zero-Value",
+			Numa:    0,
+			Mode:    "hami-core",
+			Health:  true,
+		},
 	}
 
 	marshaled := MarshalNodeDevices(input)
@@ -149,6 +160,15 @@ func TestMarshalNodeDevices(t *testing.T) {
 	}
 	if strings.Contains(marshaled, "migtemplate") {
 		t.Fatalf("expected migtemplate to be omitted, got %s", marshaled)
+	}
+	if !strings.Contains(marshaled, `"index":0`) {
+		t.Fatalf("expected zero-valued index to be serialized, got %s", marshaled)
+	}
+	if !strings.Contains(marshaled, `"numa":0`) {
+		t.Fatalf("expected zero-valued numa to be serialized, got %s", marshaled)
+	}
+	if !strings.Contains(marshaled, `"devcore":0`) {
+		t.Fatalf("expected zero-valued devcore to be serialized, got %s", marshaled)
 	}
 
 	got, err := UnMarshalNodeDevices(marshaled)
@@ -165,6 +185,17 @@ func TestMarshalNodeDevices(t *testing.T) {
 			Devcore: 50,
 			Type:    "NVIDIA-Legacy",
 			Numa:    1,
+			Mode:    "hami-core",
+			Health:  true,
+		},
+		{
+			ID:      "GPU-1",
+			Index:   0,
+			Count:   1,
+			Devmem:  1024,
+			Devcore: 0,
+			Type:    "NVIDIA-Zero-Value",
+			Numa:    0,
 			Mode:    "hami-core",
 			Health:  true,
 		},

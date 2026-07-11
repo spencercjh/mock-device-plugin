@@ -151,12 +151,12 @@ func UnMarshalNodeDevices(str string) ([]*DeviceInfo, error) {
 func MarshalNodeDevices(dlist []*DeviceInfo) string {
 	type nodeDeviceAnnotation struct {
 		ID      string `json:"id,omitempty"`
-		Index   uint   `json:"index,omitempty"`
-		Count   int32  `json:"count,omitempty"`
-		Devmem  int32  `json:"devmem,omitempty"`
-		Devcore int32  `json:"devcore,omitempty"`
+		Index   uint   `json:"index"`
+		Count   int32  `json:"count"`
+		Devmem  int32  `json:"devmem"`
+		Devcore int32  `json:"devcore"`
 		Type    string `json:"type,omitempty"`
-		Numa    int    `json:"numa,omitempty"`
+		Numa    int    `json:"numa"`
 		Mode    string `json:"mode,omitempty"`
 		Health  bool   `json:"health,omitempty"`
 	}

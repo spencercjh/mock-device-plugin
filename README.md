@@ -28,8 +28,8 @@ The mock plugin **does not detect hardware**. It refreshes every ~30s and has tw
 Today that means:
 
 - **NVIDIA primary path:** mount the optional `hami-mock-inventory` ConfigMap, label the node with `groupBy.labelKey`, and let the plugin read `groups.<group>.nvidia[]`.
-- **NVIDIA fallback path:** if the inventory file is missing, the node label is absent, or the label does not match a populated group, the plugin falls back to the legacy manual path.
-- **NVIDIA inventory errors:** if the current node matches a group and that group's NVIDIA inventory is malformed or unreadable, the runtime surfaces the error instead of silently falling back.
+- **Fallback behavior:** if the inventory file is missing, the node label is absent, or the label does not match a populated group, the plugin falls back to the legacy manual path.
+- **Malformed inventory behavior:** if the current node matches a group and that group's NVIDIA inventory is malformed or unreadable, the runtime surfaces the error instead of silently falling back.
 - **Ascend / Hygon:** these vendors still use the legacy manual path today.
 
 On a **real** cluster, the legacy annotation and count resource are normally produced by the real device plugin. In a **mock-only** (no hardware) environment you provide them yourself when using the fallback/manual path:
